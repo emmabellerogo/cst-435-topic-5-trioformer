@@ -15,10 +15,13 @@ Environment variables (set locally in a .env, and in the Render dashboard):
 """
 from __future__ import annotations
 
+import logging
 import os
 from typing import List, Optional
 
 from supabase import Client, create_client
+
+logger = logging.getLogger(__name__)
 
 _client: Optional[Client] = None
 
@@ -170,3 +173,93 @@ def insert_sequence_metadata(
         .execute()
     )
     return resp.data[0]
+
+
+# ===========================================================================
+# TrioFormer: inputs / inferences / benchmarks  (db/migrations/002_trioformer.sql)
+# ===========================================================================
+# These helpers raise ``DatabaseError`` with a SANITIZED message. The raw
+# exception is logged server-side (type + truncated text, never request
+# headers) and chained as ``__cause__`` but is never put in an HTTP response.
+
+
+class DatabaseError(RuntimeError):
+    """A Supabase operation failed or Supabase is not configured."""
+
+
+def _call(operation: str, fn):
+    """Run ``fn()``; convert every failure into a sanitized ``DatabaseError``."""
+    try:
+        return fn()
+    except DatabaseError:
+        raise
+    except KeyError as exc:  # get_client(): missing environment variable
+        raise DatabaseError(
+            "Database is not configured (SUPABASE_URL / SUPABASE_SERVICE_KEY missing)."
+        ) from exc
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("Supabase %s failed: %s: %.200s", operation, type(exc).__name__, exc)
+        raise DatabaseError(f"Database operation '{operation}' failed.") from exc
+
+
+def insert_inference(
+    input_sha256: str, model_name: str, output: str, latency_ms: int
+) -> dict:
+    """Record one served inference.
+
+    1. Upsert the prompt's SHA-256 into ``inputs`` (``ON CONFLICT DO NOTHING``;
+       needs only INSERT privilege). Only the hash is stored -- never the prompt.
+    2. Insert the ``inferences`` row; ``served_at`` is set by the database.
+
+    The two statements are not one transaction (supabase-py has no multi-statement
+    transactions); a failure of step 2 can leave an orphan hash row in ``inputs``,
+    which is harmless. Returns the inserted row (``id``, ``served_at``, ...).
+    """
+
+    def run() -> dict:
+        client = get_client()
+        client.table("inputs").upsert(
+            {"sha256": input_sha256}, on_conflict="sha256", ignore_duplicates=True
+        ).execute()
+        resp = (
+            client.table("inferences")
+            .insert(
+                {
+                    "input_sha256": input_sha256,
+                    "model_name": model_name,
+                    "output": output,
+                    "latency_ms": latency_ms,
+                }
+            )
+            .execute()
+        )
+        return resp.data[0]
+
+    return _call("insert_inference", run)
+
+
+def get_benchmarks() -> List[dict]:
+    """Rows of the ``benchmarks`` materialized view (as of its last refresh)."""
+    return _call(
+        "get_benchmarks",
+        lambda: get_client().table("benchmarks").select("*").order("model_name").execute().data,
+    )
+
+
+def get_benchmark_status() -> Optional[dict]:
+    """The single ``benchmark_refresh_status`` row (actual last refresh metadata)."""
+
+    def run() -> Optional[dict]:
+        resp = get_client().table("benchmark_refresh_status").select("*").limit(1).execute()
+        return resp.data[0] if resp.data else None
+
+    return _call("get_benchmark_status", run)
+
+
+def refresh_benchmarks() -> dict:
+    """Call the ``refresh_benchmarks()`` SQL function (advisory-locked, concurrent-safe).
+
+    Returns e.g. ``{"refreshed": true, "mode": "concurrent", "rows": 3, ...}`` or
+    ``{"refreshed": false, "reason": "refresh_in_progress"}``.
+    """
+    return _call("refresh_benchmarks", lambda: get_client().rpc("refresh_benchmarks").execute().data)

@@ -14,36 +14,68 @@ matrices so a client can see *which positions attend to which*.
 from __future__ import annotations
 
 import hashlib
+import importlib.metadata
+import importlib.util
 import json
+import logging
 import os
 import subprocess
+import threading
+import time
+from contextlib import contextmanager
+from dataclasses import asdict
+from datetime import datetime, timezone
+from typing import Callable, Iterator, Tuple
 
 import torch
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
 
-from api import db
+from api import db, encoder_demo
+from api import model_pipelines as mp
 from api.training import predict_seq, train_transformer
 from shared.data import CLASS_NAMES, N_CLASSES, VOCAB_SIZE, generate_one
 from shared.schemas import (
+    BenchmarkRefreshInfo,
+    BenchmarkRow,
+    BenchmarksResponse,
+    BertFillMaskRequest,
+    BertFillMaskResponse,
     ClassesResponse,
     ClassMetrics,
     Dataset,
     DatasetCreate,
+    EncoderAttentionRequest,
+    EncoderAttentionResponse,
+    Gpt2ContinueRequest,
+    Gpt2ContinueResponse,
     Health,
+    MaskPredictionOut,
     PredictRequest,
     PredictResponse,
     PredictSampleRequest,
     Run,
+    T5SummarizeRequest,
+    T5SummarizeResponse,
     TrainRequest,
     TrainResponse,
     Version,
 )
 
+logger = logging.getLogger("trioformer")
+
 app = FastAPI(
-    title="Former-It API",
-    description="From-scratch Transformer encoder classifier for the three-cloud stack.",
-    version="1.0.0",
+    title="TrioFormer API",
+    description=(
+        "Side-by-side Transformer inference: pretrained BERT (fill-mask), GPT-2 (continuation) "
+        "and T5 (summarization), plus educational attention heatmaps from our own encoder, with "
+        "server-side latency benchmarks persisted in Supabase.\n\n"
+        "The original Former-It endpoints (/datasets, /train, /runs, /predict, /predict_sample, "
+        "/classes) are kept under the `legacy` tag.\n\n"
+        "**Errors**: 422 = invalid input (`{\"detail\": ...}`); 503 = a model could not be loaded, "
+        "the database is unavailable, or the server is busy (see `Retry-After`)."
+    ),
+    version="2.0.0",
 )
 
 app.add_middleware(
@@ -89,7 +121,7 @@ def _seq_sha256(sequence: list[int]) -> str:
 # ---------------------------------------------------------------------------
 # datasets
 # ---------------------------------------------------------------------------
-@app.post("/datasets", response_model=Dataset, tags=["datasets"])
+@app.post("/datasets", response_model=Dataset, tags=["legacy"])
 def create_dataset(req: DatasetCreate) -> Dataset:
     """Register a synthetic sequence dataset (parameters only; symbols come from seed)."""
     row = db.insert_dataset(
@@ -106,7 +138,7 @@ def create_dataset(req: DatasetCreate) -> Dataset:
 # ---------------------------------------------------------------------------
 # training
 # ---------------------------------------------------------------------------
-@app.post("/train", response_model=TrainResponse, tags=["training"])
+@app.post("/train", response_model=TrainResponse, tags=["legacy"])
 def train(req: TrainRequest) -> TrainResponse:
     """Read dataset params from Supabase, train the model, persist run + artifact."""
     dataset = db.get_dataset(req.dataset_id)
@@ -133,7 +165,7 @@ def train(req: TrainRequest) -> TrainResponse:
     return TrainResponse(run_id=run["id"], metrics=ClassMetrics(**metrics))
 
 
-@app.get("/runs/{run_id}", response_model=Run, tags=["training"])
+@app.get("/runs/{run_id}", response_model=Run, tags=["legacy"])
 def get_run(run_id: int) -> Run:
     row = db.get_run(run_id)
     if row is None:
@@ -141,7 +173,7 @@ def get_run(run_id: int) -> Run:
     return Run(**{k: row[k] for k in Run.model_fields})
 
 
-@app.get("/runs", response_model=list[Run], tags=["training"])
+@app.get("/runs", response_model=list[Run], tags=["legacy"])
 def list_runs() -> list[Run]:
     rows = db.latest_runs(limit=50)
     return [Run(**{k: r[k] for k in Run.model_fields}) for r in rows]
@@ -173,7 +205,7 @@ def _predict_sequence(
     )
 
 
-@app.post("/predict", response_model=PredictResponse, tags=["prediction"])
+@app.post("/predict", response_model=PredictResponse, tags=["legacy"])
 def predict(req: PredictRequest) -> PredictResponse:
     """Classify a symbol sequence and return per-layer, per-head attention.
 
@@ -187,7 +219,7 @@ def predict(req: PredictRequest) -> PredictResponse:
     return _predict_sequence(req.run_id, req.sequence, true_class=None)
 
 
-@app.post("/predict_sample", response_model=PredictResponse, tags=["prediction"])
+@app.post("/predict_sample", response_model=PredictResponse, tags=["legacy"])
 def predict_sample(req: PredictSampleRequest) -> PredictResponse:
     """Generate a synthetic sequence, classify it, and return attention matrices.
 
@@ -207,10 +239,296 @@ def predict_sample(req: PredictSampleRequest) -> PredictResponse:
 # ---------------------------------------------------------------------------
 # meta
 # ---------------------------------------------------------------------------
-@app.get("/classes", response_model=ClassesResponse, tags=["meta"])
+@app.get("/classes", response_model=ClassesResponse, tags=["legacy"])
 def classes() -> ClassesResponse:
     """Return the class labels the model predicts over."""
     return ClassesResponse(classes=CLASS_NAMES, n_classes=N_CLASSES)
+
+
+# ===========================================================================
+# TrioFormer: pretrained-model endpoints
+# ===========================================================================
+# Latency definition (persisted and shown by /benchmarks):
+#   INCLUDED : tokenization + model forward/generation + decoding, measured with
+#              time.perf_counter() around the pipeline call.
+#   EXCLUDED : model loading (done just before the timer; reported as
+#              `cold_start`), waiting for a free inference slot, the Supabase
+#              write, JSON serialisation and network time.
+LATENCY_DEFINITION = (
+    "latency_ms = server-side time.perf_counter() around the pipeline call: tokenization + model "
+    "forward/generation + decoding. Excludes model loading (first request per model is flagged "
+    "cold_start), queueing for the inference slot, the database write and network transfer."
+)
+
+BENCHMARK_TTL_SECONDS = int(os.environ.get("BENCHMARK_REFRESH_TTL_SECONDS", "300"))
+BENCHMARK_MIN_FORCE_SECONDS = 10  # `?refresh=true` is ignored if refreshed more recently than this
+_QUEUE_TIMEOUT_SECONDS = float(os.environ.get("TRIOFORMER_QUEUE_TIMEOUT_SECONDS", "25"))
+# Free-tier hosts have little RAM/CPU: run model inference one request at a time.
+_inference_slots = threading.BoundedSemaphore(
+    max(1, int(os.environ.get("TRIOFORMER_MAX_CONCURRENT_INFERENCES", "1")))
+)
+
+_RESP_ERRORS = {
+    422: {"description": "Invalid input. Body: {\"detail\": \"...\"}"},
+    503: {"description": "Model failed to load, database unavailable (inference NOT recorded), or server busy."},
+}
+
+
+def prompt_sha256(text: str) -> str:
+    """SHA-256 hex digest of the exact submitted text (UTF-8, no normalisation).
+
+    Used as the primary key of ``inputs``; the raw text is never stored. The same
+    text yields the same hash for every endpoint and every model.
+    """
+    return hashlib.sha256(text.encode("utf-8")).hexdigest()
+
+
+@contextmanager
+def _inference_slot() -> Iterator[None]:
+    if not _inference_slots.acquire(timeout=_QUEUE_TIMEOUT_SECONDS):
+        raise HTTPException(
+            status_code=503,
+            detail="Server is busy with another inference. Please retry shortly.",
+            headers={"Retry-After": "5"},
+        )
+    try:
+        yield
+    finally:
+        _inference_slots.release()
+
+
+def _serve_pretrained(
+    model_name: str, text: str, run: Callable[[], object], db_output: Callable[[object], str]
+) -> Tuple[object, dict]:
+    """Run a pipeline, persist the inference, and only then return.
+
+    Order: take an inference slot -> load the model (untimed) -> time the pipeline
+    call -> write ``inputs``/``inferences`` to Supabase -> return. If the write
+    fails the result is withheld (503) so every successful response is on record.
+    """
+    sha = prompt_sha256(text)
+    with _inference_slot():
+        cold = model_name not in mp.loaded_models()
+        try:
+            mp.preload((model_name,))
+        except mp.ModelLoadError as exc:
+            logger.error("model load failed for %s: %s", model_name, exc)
+            raise HTTPException(
+                status_code=503, detail=f"Model '{model_name}' is currently unavailable (failed to load)."
+            ) from exc
+        t0 = time.perf_counter()
+        try:
+            result = run()
+        except mp.InvalidInputError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+        except mp.ModelLoadError as exc:
+            raise HTTPException(
+                status_code=503, detail=f"Model '{model_name}' is currently unavailable (failed to load)."
+            ) from exc
+        latency_ms = max(0, int(round((time.perf_counter() - t0) * 1000)))
+    try:
+        row = db.insert_inference(
+            input_sha256=sha, model_name=model_name, output=db_output(result), latency_ms=latency_ms
+        )
+    except db.DatabaseError as exc:
+        raise HTTPException(
+            status_code=503,
+            detail="The inference could not be recorded in the database, so the result was withheld. Please retry.",
+        ) from exc
+    meta = {
+        "model": model_name,
+        "input_sha256": sha,
+        "latency_ms": latency_ms,
+        "inference_id": row["id"],
+        "served_at": row.get("served_at"),
+        "cold_start": cold,
+    }
+    return result, meta
+
+
+@app.post(
+    "/bert_fillmask",
+    response_model=BertFillMaskResponse,
+    tags=["trioformer"],
+    summary="BERT masked-token prediction",
+    responses=_RESP_ERRORS,
+)
+def bert_fillmask(req: BertFillMaskRequest) -> BertFillMaskResponse:
+    """Predict the token behind the single `[MASK]` using `bert-base-uncased`.
+
+    Persists: SHA-256 of `text`, model name, and the top-k predicted tokens with
+    scores (NOT the filled sentence, which would contain the prompt).
+    """
+    result, meta = _serve_pretrained(
+        mp.BERT_MODEL,
+        req.text,
+        lambda: mp.bert_fill_mask(req.text, top_k=req.top_k),
+        lambda r: ", ".join(f"{p.token} ({p.score:.3f})" for p in r.predictions),
+    )
+    return BertFillMaskResponse(
+        **meta,
+        output_text=result.output_text,
+        predictions=[MaskPredictionOut(**asdict(p)) for p in result.predictions],
+        input_tokens=result.input_tokens,
+    )
+
+
+@app.post(
+    "/gpt2_continue",
+    response_model=Gpt2ContinueResponse,
+    tags=["trioformer"],
+    summary="GPT-2 text continuation",
+    responses=_RESP_ERRORS,
+)
+def gpt2_continue(req: Gpt2ContinueRequest) -> Gpt2ContinueResponse:
+    """Continue `prompt` with greedy (deterministic) decoding using `gpt2`.
+
+    `output_text` is only the new continuation. Persists the continuation, not the prompt.
+    """
+    result, meta = _serve_pretrained(
+        mp.GPT2_MODEL,
+        req.prompt,
+        lambda: mp.gpt2_continue(req.prompt, max_new_tokens=req.max_new_tokens),
+        lambda r: r.output_text,
+    )
+    return Gpt2ContinueResponse(
+        **meta,
+        output_text=result.output_text,
+        prompt_tokens=result.prompt_tokens,
+        generated_tokens=result.generated_tokens,
+    )
+
+
+@app.post(
+    "/t5_summarize",
+    response_model=T5SummarizeResponse,
+    tags=["trioformer"],
+    summary="T5 summarization",
+    responses=_RESP_ERRORS,
+)
+def t5_summarize(req: T5SummarizeRequest) -> T5SummarizeResponse:
+    """Summarize `text` with `t5-small` (`summarize:` prefix, 4-beam search).
+
+    t5-small is small: summaries are often extractive and may be imperfect.
+    """
+    result, meta = _serve_pretrained(
+        mp.T5_MODEL,
+        req.text,
+        lambda: mp.t5_summarize(
+            req.text, max_new_tokens=req.max_new_tokens, min_new_tokens=req.min_new_tokens
+        ),
+        lambda r: r.output_text,
+    )
+    return T5SummarizeResponse(
+        **meta,
+        output_text=result.output_text,
+        input_tokens=result.input_tokens,
+        output_tokens=result.output_tokens,
+    )
+
+
+# ===========================================================================
+# TrioFormer: custom encoder attention (educational; not persisted)
+# ===========================================================================
+@app.post(
+    "/encoder_attention",
+    response_model=EncoderAttentionResponse,
+    tags=["trioformer"],
+    summary="Educational attention heatmap from our custom encoder",
+    responses={422: _RESP_ERRORS[422]},
+)
+def encoder_attention(req: EncoderAttentionRequest) -> EncoderAttentionResponse:
+    """Per-head self-attention from `src/transformer.py` for the words of `text`.
+
+    **Educational only**: an UNTRAINED encoder with fixed random weights. It shows
+    the attention mechanism (and the effect of positional encoding), not how a
+    pretrained language model reads text. Nothing is logged to the database.
+    """
+    try:
+        out = encoder_demo.compute_attention(
+            req.text, num_heads=req.num_heads, use_positional_encoding=req.use_positional_encoding
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    return EncoderAttentionResponse(**out)
+
+
+# ===========================================================================
+# TrioFormer: benchmarks
+# ===========================================================================
+def _parse_ts(value) -> datetime | None:
+    if value is None:
+        return None
+    if isinstance(value, datetime):
+        return value if value.tzinfo else value.replace(tzinfo=timezone.utc)
+    return datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+
+
+@app.get(
+    "/benchmarks",
+    response_model=BenchmarksResponse,
+    tags=["trioformer"],
+    summary="Persisted per-model latency statistics",
+    responses={503: _RESP_ERRORS[503]},
+)
+def benchmarks(
+    refresh: bool = Query(
+        False,
+        description=(
+            "Ask for a refresh of the materialized view now. Ignored if it was refreshed in the last "
+            f"{BENCHMARK_MIN_FORCE_SECONDS}s. Without it, the view is refreshed automatically at most once per TTL."
+        ),
+    ),
+) -> BenchmarksResponse:
+    """Latency statistics (mean, min, p50, p95, p99, max) per model, from the `benchmarks` view.
+
+    **Refresh strategy**: the view is NOT refreshed per inference. On read, if it
+    was never refreshed or is older than the TTL (default 300 s), this endpoint
+    calls the SQL function `refresh_benchmarks()`, which is advisory-locked (one
+    refresh at a time) and uses `REFRESH ... CONCURRENTLY`. If the refresh fails,
+    the last materialized data is returned with `refresh.stale = true`. New
+    inferences therefore appear after the next refresh.
+    """
+    try:
+        status = db.get_benchmark_status() or {}
+        last = _parse_ts(status.get("last_refreshed_at"))
+        now = datetime.now(timezone.utc)
+        age = (now - last).total_seconds() if last else None
+        due = age is None or age > BENCHMARK_TTL_SECONDS or (refresh and age > BENCHMARK_MIN_FORCE_SECONDS)
+
+        refreshed_now, note = False, None
+        if due:
+            try:
+                res = db.refresh_benchmarks() or {}
+                if res.get("refreshed"):
+                    refreshed_now = True
+                    status = db.get_benchmark_status() or status
+                elif res.get("reason") == "refresh_in_progress":
+                    note = "A refresh is already running; serving the latest materialized data."
+            except db.DatabaseError:
+                note = "Refresh failed; serving the last materialized data."
+
+        rows = db.get_benchmarks()
+    except db.DatabaseError as exc:
+        raise HTTPException(status_code=503, detail="Benchmark data is temporarily unavailable.") from exc
+
+    last = _parse_ts(status.get("last_refreshed_at"))
+    age = (datetime.now(timezone.utc) - last).total_seconds() if last else None
+    return BenchmarksResponse(
+        benchmarks=[BenchmarkRow(**{k: r.get(k) for k in BenchmarkRow.model_fields}) for r in rows],
+        refresh=BenchmarkRefreshInfo(
+            last_refreshed_at=last,
+            last_duration_ms=status.get("last_duration_ms"),
+            last_row_count=status.get("last_row_count"),
+            last_mode=status.get("last_mode"),
+            age_seconds=age,
+            stale=age is None or age > BENCHMARK_TTL_SECONDS,
+            refreshed_now=refreshed_now,
+            ttl_seconds=BENCHMARK_TTL_SECONDS,
+            note=note,
+        ),
+        latency_definition=LATENCY_DEFINITION,
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -218,16 +536,38 @@ def classes() -> ClassesResponse:
 # ---------------------------------------------------------------------------
 @app.get("/healthz", response_model=Health, tags=["ops"])
 def healthz() -> Health:
+    """Report model-loader and Supabase health separately.
+
+    Cheap by design: it never loads a model or downloads weights (the free tier
+    health-check must stay fast and low-memory). `model_loader` means the
+    `transformers` library is installed; `models_loaded` lists what is resident.
+    """
     supabase_ok = db.ping()
-    model_ok = torch.tensor([1.0]).sum().item() == 1.0
+    model_ok = importlib.util.find_spec("transformers") is not None
     status = "ok" if (supabase_ok and model_ok) else "degraded"
-    return Health(status=status, model_loader=model_ok, supabase=supabase_ok)
+    return Health(
+        status=status,
+        model_loader=model_ok,
+        supabase=supabase_ok,
+        models_loaded=mp.loaded_models(),
+        model_loader_detail=None if model_ok else "the `transformers` package is not installed",
+    )
 
 
 @app.get("/version", response_model=Version, tags=["ops"])
 def version() -> Version:
+    try:
+        tf_version = importlib.metadata.version("transformers")
+    except importlib.metadata.PackageNotFoundError:
+        tf_version = None
     return Version(
         git_sha=_git_sha(),
         torch_version=torch.__version__,
         supabase_project_ref=_project_ref(),
+        transformers_version=tf_version,
+        checkpoints={
+            "/bert_fillmask": mp.BERT_MODEL,
+            "/gpt2_continue": mp.GPT2_MODEL,
+            "/t5_summarize": mp.T5_MODEL,
+        },
     )

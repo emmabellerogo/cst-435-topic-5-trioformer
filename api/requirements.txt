@@ -7,3 +7,8 @@ torch==2.4.1
 numpy==1.26.4
 supabase==2.7.4
 python-dotenv==1.0.1
+# Pretrained BERT / GPT-2 / T5 inference (api/model_pipelines.py). Weights are
+# downloaded from the Hugging Face Hub on first use, never at build time.
+# t5-small ships a fast tokenizer, so sentencepiece is not required.
+transformers==4.44.2
+huggingface-hub==0.36.2

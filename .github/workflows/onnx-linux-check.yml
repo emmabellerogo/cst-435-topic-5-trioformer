@@ -1,0 +1,61 @@
+# Manual check of the ONNX backend on LINUX inside a container with Render Free's limits
+# (512 MB RAM, 0.1 CPU). Free for public repositories; nothing is deployed or uploaded.
+#
+# Run it AFTER the model files have been published as a GitHub Release (see models/manifest.json
+# "base_url"), from the Actions tab -> "ONNX Linux check" -> Run workflow.
+#
+# What it answers (these cannot be measured on a Mac):
+#   * peak memory (VmHWM) while switching bert -> gpt2 -> t5 -> ... under a hard 512 MB cgroup limit
+#     (an out-of-memory kill shows up as exit code 137);
+#   * load / first / warm latency under 0.1 CPU;
+#   * that the checksummed release download works from a clean Linux machine.
+name: ONNX Linux check
+
+on:
+  workflow_dispatch:
+    inputs:
+      memory_limit_mb:
+        description: "Peak-memory budget enforced by the test (MB)"
+        default: "400"
+      cpus:
+        description: "CPU share for the timed run (Render Free = 0.1)"
+        default: "0.1"
+
+jobs:
+  render-like:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install the production requirements and download the models (no resource limits)
+        run: |
+          docker run --rm -v "$PWD":/app -w /app python:3.11-slim bash -ec '
+            python -m venv .venv
+            .venv/bin/pip install --no-cache-dir -r api/requirements.txt pytest==8.3.3
+            .venv/bin/python scripts/fetch_models.py
+            du -sh .venv models
+          '
+
+      - name: Unit + API tests on the torch-free install
+        run: |
+          docker run --rm -v "$PWD":/app -w /app -e TRIOFORMER_BACKEND=onnx python:3.11-slim \
+            .venv/bin/python -m pytest -q tests/test_onnx_pipelines.py tests/test_onnx_encoder.py \
+            tests/test_onnx_api.py tests/test_fetch_models.py -p no:cacheprovider
+
+      - name: Memory + latency under Render Free limits (512 MB, ${{ inputs.cpus }} CPU, no swap)
+        run: |
+          docker run --rm --memory=512m --memory-swap=512m --cpus=${{ inputs.cpus }} \
+            -v "$PWD":/app -w /app \
+            -e TRIOFORMER_BACKEND=onnx -e TOKENIZERS_PARALLELISM=false -e MALLOC_ARENA_MAX=2 \
+            -e TRIOFORMER_ORT_THREADS=1 -e TRIOFORMER_MEMORY_LIMIT_MB=${{ inputs.memory_limit_mb }} \
+            python:3.11-slim bash -ec '
+              .venv/bin/python scripts/measure_memory.py | tee memory-report.txt
+              .venv/bin/python -m pytest -q -s tests/test_onnx_memory.py -p no:cacheprovider
+            '
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: memory-report
+          path: memory-report.txt

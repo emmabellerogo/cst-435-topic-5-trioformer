@@ -1,18 +1,37 @@
-# Render.com blueprint for the FastAPI model service (Cloud #2).
+# Render.com blueprint for the FastAPI model service (Cloud #2) -- ONNX backend, Render Free.
 # In the Render dashboard: New -> Blueprint -> point at this repo.
 # Set SUPABASE_URL and SUPABASE_SERVICE_KEY as environment variables (secrets)
 # in the service settings after the first deploy.
+#
+# Free-tier design (512 MB RAM, 0.1 CPU, ephemeral disk, ~1 min cold start after 15 min idle):
+#   * TRIOFORMER_BACKEND=onnx -> api/onnx_pipelines.py: int8 ONNX Runtime, memory-mapped weights,
+#     ONE model resident at a time, no torch / transformers in the install.
+#   * The ~686 MB of model files are NOT in git. The build step downloads them from the GitHub Release
+#     listed in models/manifest.json and verifies SHA-256 (scripts/fetch_models.py). The build fails
+#     loudly if the release is missing or a checksum is wrong.
+#   * TRIOFORMER_AUTO_FETCH=1 is a safety net: if the files built into the image are not present at
+#     runtime, the first request for a model downloads just that model (slow, but not a dead service).
 services:
   - type: web
     name: former-it-api
     runtime: python
     plan: free
-    buildCommand: "pip install -r api/requirements.txt"
+    buildCommand: "pip install -r api/requirements.txt && python scripts/fetch_models.py"
     startCommand: "uvicorn api.main:app --host 0.0.0.0 --port $PORT"
     healthCheckPath: /healthz
     envVars:
       - key: PYTHON_VERSION
         value: "3.11.9"
+      - key: TRIOFORMER_BACKEND
+        value: "onnx"
+      - key: TRIOFORMER_AUTO_FETCH
+        value: "1"
+      - key: TRIOFORMER_ORT_THREADS
+        value: "1"
+      - key: TOKENIZERS_PARALLELISM
+        value: "false"
+      - key: MALLOC_ARENA_MAX
+        value: "2"
       - key: SUPABASE_URL
         sync: false
       - key: SUPABASE_SERVICE_KEY

@@ -137,6 +137,7 @@ class Health(BaseModel):
         description="Checkpoints currently resident in memory. Empty on a cold start; models load on first use.",
     )
     model_loader_detail: Optional[str] = Field(None, description="Why model_loader is false, if it is.")
+    backend: Optional[str] = Field(None, description='Inference backend in use: "onnx" (light, Render Free) or "torch" (PyTorch reference).')
 
     model_config = ConfigDict(
         protected_namespaces=(),  # field names start with "model_"
@@ -155,6 +156,8 @@ class Version(BaseModel):
     supabase_project_ref: Optional[str]
     app_version: str = Field("2.0.0", description="TrioFormer API version.")
     transformers_version: Optional[str] = Field(None, description="Installed `transformers` version, if any.")
+    backend: Optional[str] = Field(None, description='Inference backend in use: "onnx" or "torch".')
+    onnxruntime_version: Optional[str] = Field(None, description="Installed `onnxruntime` version, if any.")
     checkpoints: Dict[str, str] = Field(
         default_factory=dict, description="Endpoint -> Hugging Face checkpoint used."
     )

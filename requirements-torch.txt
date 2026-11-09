@@ -1,0 +1,6 @@
+# PyTorch reference implementation: api/model_pipelines.py, api/encoder_demo.py, api/training.py,
+# src/transformer.py, benchmarks/. NOT needed (and not installed) on Render.
+# CPU-only torch wheels on Linux: pip install --extra-index-url https://download.pytorch.org/whl/cpu
+torch==2.4.1
+transformers==4.44.2
+huggingface-hub==0.36.2

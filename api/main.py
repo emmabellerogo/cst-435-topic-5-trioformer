@@ -27,13 +27,10 @@ from dataclasses import asdict
 from datetime import datetime, timezone
 from typing import Callable, Iterator, Tuple
 
-import torch
 from fastapi import FastAPI, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
 
-from api import db, encoder_demo
-from api import model_pipelines as mp
-from api.training import predict_seq, train_transformer
+from api import db
 from shared.data import CLASS_NAMES, N_CLASSES, VOCAB_SIZE, generate_one
 from shared.schemas import (
     BenchmarkRefreshInfo,
@@ -63,6 +60,40 @@ from shared.schemas import (
 )
 
 logger = logging.getLogger("trioformer")
+
+# ---------------------------------------------------------------------------
+# Inference backend  (TRIOFORMER_BACKEND = "onnx" | "torch")
+#   onnx  - api/onnx_pipelines.py + api/onnx_encoder.py: int8 ONNX Runtime, memory-mapped weights,
+#           one model resident at a time, NO torch/transformers (what runs on Render Free).
+#   torch - api/model_pipelines.py + api/encoder_demo.py: the PyTorch reference implementation.
+# Both expose the same function names, result types and errors. If the variable is unset the
+# reference ("torch") is used when torch AND transformers are installed (local development),
+# otherwise the light "onnx" backend. Production sets it explicitly (render.yaml).
+# ---------------------------------------------------------------------------
+BACKEND = (
+    os.environ.get("TRIOFORMER_BACKEND", "").strip().lower()
+    or ("torch" if all(importlib.util.find_spec(m) for m in ("torch", "transformers")) else "onnx")
+)
+
+
+def _load_backend(name: str):
+    if name == "onnx":
+        from api import onnx_encoder, onnx_pipelines
+
+        return onnx_pipelines, onnx_encoder
+    if name == "torch":
+        try:
+            from api import encoder_demo, model_pipelines
+        except ImportError as exc:  # torch / transformers missing
+            raise RuntimeError(
+                "TRIOFORMER_BACKEND=torch needs PyTorch and Transformers "
+                "(pip install -r requirements-export.txt). Use TRIOFORMER_BACKEND=onnx for the light runtime."
+            ) from exc
+        return model_pipelines, encoder_demo
+    raise RuntimeError(f"TRIOFORMER_BACKEND must be 'onnx' or 'torch', got {name!r}")
+
+
+mp, encoder_backend = _load_backend(BACKEND)
 
 app = FastAPI(
     title="TrioFormer API",
@@ -106,6 +137,19 @@ def _project_ref() -> str | None:
     return None
 
 
+def _training():
+    """Former-It training/prediction needs PyTorch; the light ONNX deployment does not ship it."""
+    try:
+        from api import training
+    except ImportError as exc:
+        raise HTTPException(
+            status_code=503,
+            detail="This endpoint needs PyTorch, which is not installed in this deployment "
+                   f"(backend: {BACKEND}).",
+        ) from exc
+    return training
+
+
 def _artifact_or_404(run_id: int) -> str:
     model_b64 = db.get_run_artifact(run_id)
     if model_b64 is None:
@@ -145,7 +189,7 @@ def train(req: TrainRequest) -> TrainResponse:
     if dataset is None:
         raise HTTPException(status_code=404, detail="dataset_id not found")
 
-    metrics, model_b64, _loss = train_transformer(
+    metrics, model_b64, _loss = _training().train_transformer(
         n_rows=dataset["n_rows"],
         seq_len=dataset["seq_len"],
         seed=dataset["seed"],
@@ -186,7 +230,7 @@ def _predict_sequence(
     run_id: int, sequence: list[int], true_class: str | None
 ) -> PredictResponse:
     model_b64 = _artifact_or_404(run_id)
-    result = predict_seq(model_b64, sequence)
+    result = _training().predict_seq(model_b64, sequence)
     sha256 = _seq_sha256(sequence)
     db.insert_sequence_metadata(
         run_id=run_id,
@@ -445,11 +489,14 @@ def encoder_attention(req: EncoderAttentionRequest) -> EncoderAttentionResponse:
     pretrained language model reads text. Nothing is logged to the database.
     """
     try:
-        out = encoder_demo.compute_attention(
+        out = encoder_backend.compute_attention(
             req.text, num_heads=req.num_heads, use_positional_encoding=req.use_positional_encoding
         )
     except ValueError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
+    except (OSError, ImportError) as exc:  # ONNX files missing / onnxruntime unavailable
+        logger.error("encoder backend unavailable: %s", exc)
+        raise HTTPException(status_code=503, detail="The educational encoder is currently unavailable.") from exc
     return EncoderAttentionResponse(**out)
 
 
@@ -534,37 +581,50 @@ def benchmarks(
 # ---------------------------------------------------------------------------
 # ops
 # ---------------------------------------------------------------------------
+def _dist_version(pkg: str) -> str | None:
+    try:
+        return importlib.metadata.version(pkg)
+    except importlib.metadata.PackageNotFoundError:
+        return None
+
+
 @app.get("/healthz", response_model=Health, tags=["ops"])
 def healthz() -> Health:
     """Report model-loader and Supabase health separately.
 
     Cheap by design: it never loads a model or downloads weights (the free tier
-    health-check must stay fast and low-memory). `model_loader` means the
-    `transformers` library is installed; `models_loaded` lists what is resident.
+    health-check must stay fast and low-memory). `model_loader` means the selected
+    backend is ready: for `onnx`, onnxruntime + tokenizers are installed and every model
+    file is present on disk; for `torch`, `transformers` is installed. `models_loaded`
+    lists what is resident in memory (at most one with the ONNX backend).
     """
     supabase_ok = db.ping()
-    model_ok = importlib.util.find_spec("transformers") is not None
+    if BACKEND == "onnx":
+        status_info = mp.backend_status()
+        model_ok, detail = status_info["ok"], status_info["detail"]
+    else:
+        model_ok = importlib.util.find_spec("transformers") is not None
+        detail = None if model_ok else "the `transformers` package is not installed"
     status = "ok" if (supabase_ok and model_ok) else "degraded"
     return Health(
         status=status,
         model_loader=model_ok,
         supabase=supabase_ok,
         models_loaded=mp.loaded_models(),
-        model_loader_detail=None if model_ok else "the `transformers` package is not installed",
+        model_loader_detail=detail,
+        backend=BACKEND,
     )
 
 
 @app.get("/version", response_model=Version, tags=["ops"])
 def version() -> Version:
-    try:
-        tf_version = importlib.metadata.version("transformers")
-    except importlib.metadata.PackageNotFoundError:
-        tf_version = None
     return Version(
         git_sha=_git_sha(),
-        torch_version=torch.__version__,
+        torch_version=_dist_version("torch") or "not installed",
         supabase_project_ref=_project_ref(),
-        transformers_version=tf_version,
+        transformers_version=_dist_version("transformers"),
+        backend=BACKEND,
+        onnxruntime_version=_dist_version("onnxruntime"),
         checkpoints={
             "/bert_fillmask": mp.BERT_MODEL,
             "/gpt2_continue": mp.GPT2_MODEL,

@@ -1,0 +1,11 @@
+models/*
+!models/manifest.json
+!models/edu/
+!models/edu/*
+# local build outputs
+build/
+__pycache__/
+*.pyc
+.pytest_cache/
+.env
+.venv/

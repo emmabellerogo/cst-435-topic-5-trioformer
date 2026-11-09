@@ -1,14 +1,13 @@
-# API tier (deployed on Render.com)
+# API tier (deployed on Render.com) -- ONNX backend (TRIOFORMER_BACKEND=onnx).
+# Deliberately NO torch and NO transformers: Render Free has 512 MB RAM and 0.1 CPU. The PyTorch
+# reference implementation (api/model_pipelines.py, api/encoder_demo.py) needs requirements-torch.txt.
+# Model files are not Python packages: they are downloaded by scripts/fetch_models.py (see render.yaml).
 fastapi==0.115.0
 uvicorn[standard]==0.30.6
 pydantic==2.9.2
-# CPU-only torch keeps the Render build small and free-tier friendly.
-torch==2.4.1
 numpy==1.26.4
 supabase==2.7.4
 python-dotenv==1.0.1
-# Pretrained BERT / GPT-2 / T5 inference (api/model_pipelines.py). Weights are
-# downloaded from the Hugging Face Hub on first use, never at build time.
-# t5-small ships a fast tokenizer, so sentencepiece is not required.
-transformers==4.44.2
-huggingface-hub==0.36.2
+onnxruntime==1.31.1
+# 0.19.1 is the newest release both the light runtime and transformers==4.44.2 (dev/export) accept.
+tokenizers==0.19.1

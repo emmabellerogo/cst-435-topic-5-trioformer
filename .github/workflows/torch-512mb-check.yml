@@ -9,21 +9,16 @@ on:
 jobs:
   check:
     runs-on: ubuntu-latest
-    timeout-minutes: 25
+    timeout-minutes: 35
     strategy:
       fail-fast: false
       matrix:
         include:
-          - { name: bert_only,         models: small, only: "bert",         seq: 1, limit: 512 }
-          - { name: gpt_only,          models: small, only: "gpt",          seq: 1, limit: 512 }
-          - { name: t5_only,           models: small, only: "t5",           seq: 1, limit: 512 }
-          - { name: sequential,        models: small, only: "bert,gpt,t5",  seq: 1, limit: 512 }
-          - { name: all_resident,      models: small, only: "bert,gpt,t5",  seq: 0, limit: 512 }
-          - { name: t5mini_only,       models: mini,  only: "t5",           seq: 1, limit: 512 }
-          - { name: sequential_t5mini, models: mini,  only: "bert,gpt,t5",  seq: 1, limit: 512 }
-          - { name: seq_448MB,         models: small, only: "bert,gpt,t5",  seq: 1, limit: 448 }
-          - { name: seq_384MB,         models: small, only: "bert,gpt,t5",  seq: 1, limit: 384 }
-          - { name: t5mini_seq_384MB,  models: mini,  only: "bert,gpt,t5",  seq: 1, limit: 384 }
+          - { name: seq_352MB,         models: small, only: "bert,gpt,t5",  seq: 1, limit: 352, cpus: "0.5" }
+          - { name: seq_320MB,         models: small, only: "bert,gpt,t5",  seq: 1, limit: 320, cpus: "0.5" }
+          - { name: seq_288MB,         models: small, only: "bert,gpt,t5",  seq: 1, limit: 288, cpus: "0.5" }
+          - { name: seq_512MB_cpu0.1,  models: small, only: "bert,gpt,t5",  seq: 1, limit: 512, cpus: "0.1" }
+          - { name: t5_only_512MB_cpu0.1, models: small, only: "t5",        seq: 1, limit: 512, cpus: "0.1" }
     steps:
       - uses: actions/checkout@v4
       - name: Build image
@@ -41,7 +36,7 @@ jobs:
           if [ "${{ matrix.models }}" = small ]; then M='{"bert":"prajjwal1/bert-small","gpt":"erwanf/gpt2-mini","t5":"t5-small"}'
           else M='{"bert":"prajjwal1/bert-small","gpt":"erwanf/gpt2-mini","t5":"LaurentBlanc/t5-efficient-mini-finetuned"}'; fi
           sync; echo 3 | sudo tee /proc/sys/vm/drop_caches >/dev/null   # this container pays for its own file pages
-          timeout 600 docker run --name trio_case --memory=${{ matrix.limit }}m --memory-swap=${{ matrix.limit }}m --cpus=0.5 \
+          timeout 1500 docker run --name trio_case --memory=${{ matrix.limit }}m --memory-swap=${{ matrix.limit }}m --cpus=${{ matrix.cpus }} \
             -v "$PWD/hf:/hf" -e HF_HUB_OFFLINE=1 -e SEQUENTIAL=${{ matrix.seq }} -e CASE_MODELS="$M" trio512 \
             python -m linux512.run_case ${{ matrix.name }} "${{ matrix.only }}" 4 2>&1 | tee out.txt
           echo "docker OOMKilled=$(docker inspect -f '{{.State.OOMKilled}}' trio_case) ExitCode=$(docker inspect -f '{{.State.ExitCode}}' trio_case)" | tee -a out.txt

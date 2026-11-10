@@ -6,7 +6,7 @@ cache, so ordinary runs and CI never download hundreds of MB. To run it:
     # 1) weights already cached (e.g. from a previous download):
     pytest tests/test_model_pipelines_smoke.py -v -s
 
-    # 2) allow it to download them (~1.2 GB total, once):
+    # 2) allow it to download them (~0.5 GB total, once):
     RUN_HF_SMOKE_DOWNLOAD=1 pytest tests/test_model_pipelines_smoke.py -v -s
 
 Set HF_HOME to relocate the cache. Without the DOWNLOAD flag the loader runs
@@ -53,6 +53,7 @@ def test_real_bert_fill_mask(monkeypatch):
     r = mp.bert_fill_mask("The capital of France is [MASK].", top_k=5)
     print("\nBERT:", r.output_text, [(p.token, round(p.score, 3)) for p in r.predictions])
     assert r.predictions[0].token == "paris"
+    assert all(0 < p.score <= 1 for p in r.predictions)
     assert r.predictions == mp.bert_fill_mask("The capital of France is [MASK].", top_k=5).predictions
 
 
@@ -63,6 +64,9 @@ def test_real_gpt2_continuation(monkeypatch):
     print("\nGPT-2:", repr(r.output_text), r.prompt_tokens, r.generated_tokens)
     assert r.output_text.strip() and prompt not in r.output_text
     assert 0 < r.generated_tokens <= 20
+    words = r.output_text.split()
+    assert len(set(words)) >= 5, f"degenerate continuation: {r.output_text!r}"   # not 'stairs stairs stairs'
+    assert sum(c.isalpha() for c in r.output_text) > 0.6 * len(r.output_text)
     assert mp.gpt2_continue(prompt, max_new_tokens=20) == r  # greedy => reproducible
 
 
@@ -77,4 +81,17 @@ def test_real_t5_summarization(monkeypatch):
     r = mp.t5_summarize(article, max_new_tokens=40)
     print("\nT5:", repr(r.output_text), r.input_tokens, r.output_tokens)
     assert r.output_text.strip() and len(r.output_text) < len(article)
+    assert {"bike", "lane"} & set(r.output_text.lower().replace(".", " ").split()), r.output_text  # about the article
     assert mp.t5_summarize(article, max_new_tokens=40) == r
+
+
+def test_real_models_switch_sequentially_with_only_one_resident(monkeypatch):
+    for name in (mp.BERT_MODEL, mp.GPT2_MODEL, mp.T5_MODEL):
+        _require(name, monkeypatch)
+    for _ in range(2):
+        mp.bert_fill_mask("The capital of France is [MASK].")
+        assert mp.loaded_models() == [mp.BERT_MODEL]
+        mp.gpt2_continue("The meaning of life is", max_new_tokens=8)
+        assert mp.loaded_models() == [mp.GPT2_MODEL]
+        mp.t5_summarize("The city council voted on Tuesday to approve a new bike lane network.", max_new_tokens=20)
+        assert mp.loaded_models() == [mp.T5_MODEL]

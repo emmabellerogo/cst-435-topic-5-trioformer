@@ -1,12 +1,23 @@
-models/*
-!models/manifest.json
-!models/edu/
-!models/edu/*
-# local build outputs
-build/
+# Python
 __pycache__/
 *.pyc
 .pytest_cache/
 .env
 .venv/
-.venv-export/
+.venv-*/
+venv/
+# local build outputs
+build/
+# model weights and Hugging Face / Torch caches (never commit these; Render downloads them at build time)
+.hf-cache/
+hf_cache/
+hf/
+.cache/
+*.safetensors
+*.bin
+*.pt
+*.pth
+*.onnx
+*.onnx.data
+# Streamlit secrets
+ui/.streamlit/secrets.toml

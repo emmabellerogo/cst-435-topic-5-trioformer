@@ -27,7 +27,7 @@ class FakeDb:
         self.refresh_calls = 0
         self.refresh_result: dict = {"refreshed": True, "mode": "concurrent", "rows": 2}
         self.rows = [
-            {"model_name": "gpt2", "n_inferences": 4, "mean_latency_ms": 120.5, "min_latency_ms": 90,
+            {"model_name": "erwanf/gpt2-mini", "n_inferences": 4, "mean_latency_ms": 120.5, "min_latency_ms": 90,
              "p50_latency_ms": 118.0, "p95_latency_ms": 150.0, "p99_latency_ms": 155.0,
              "max_latency_ms": 160, "last_served_at": iso(30)},
             {"model_name": "t5-small", "n_inferences": 2, "mean_latency_ms": 300.0, "min_latency_ms": 280,

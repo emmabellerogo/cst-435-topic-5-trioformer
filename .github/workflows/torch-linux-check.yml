@@ -1,0 +1,58 @@
+# Manual check of the PyTorch backend on LINUX inside containers with Render Free's limits
+# (hard memory cgroup, no swap, 0.1 CPU). Free for public repos; nothing is deployed, Supabase is mocked.
+# Run from the Actions tab -> "PyTorch Linux check" -> Run workflow. Each case is its own job; read the
+# summary of each job: ok/failed requests, cgroup peak, anonymous (non-reclaimable) memory, OOM kills.
+name: PyTorch Linux check
+# NOTE: manual dispatch only works once this file is on the default branch, so it also runs on pushes to
+# simplify-pytorch (with the defaults below). After merging, the push trigger can be removed.
+on:
+  push:
+    branches: [simplify-pytorch]
+  workflow_dispatch:
+    inputs:
+      memory_limit_mb:
+        description: "Container memory limit (Render Free = 512)"
+        default: "512"
+      cpus:
+        description: "CPU limit (Render Free = 0.1)"
+        default: "0.1"
+jobs:
+  check:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 40
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { name: bert_only, only: "bert" }
+          - { name: gpt2_only, only: "gpt" }
+          - { name: t5_only, only: "t5" }
+          - { name: sequential_switching, only: "bert,gpt,t5" }
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build image (exactly api/requirements.txt)
+        run: docker build -f scripts/linux_check/Dockerfile -t trio .
+      - name: Download checkpoints (not memory-limited)
+        run: |
+          mkdir -p hf && chmod 777 hf
+          docker run --rm -v "$PWD/hf:/hf" trio python scripts/download_models.py
+      - name: Run under the limit
+        run: |
+          set +e
+          sync; echo 3 | sudo tee /proc/sys/vm/drop_caches >/dev/null   # this container pays for its own file pages
+          timeout 1800 docker run --name trio_case --memory=${{ inputs.memory_limit_mb || '512' }}m \
+            --memory-swap=${{ inputs.memory_limit_mb || '512' }}m --cpus=${{ inputs.cpus || '0.1' }} \
+            -v "$PWD/hf:/hf" -e HF_HUB_OFFLINE=1 trio \
+            python -m scripts.linux_check.run_case ${{ matrix.name }} "${{ matrix.only }}" 4 2>&1 | tee out.txt
+          echo "docker OOMKilled=$(docker inspect -f '{{.State.OOMKilled}}' trio_case)" | tee -a out.txt
+          python3 - <<'PY' >> "$GITHUB_STEP_SUMMARY"
+          import json
+          r = None
+          for l in open("out.txt"):
+              if l.startswith("RESULT "): r = json.loads(l[7:])
+          if r: print(f"**{r['case']}**: ok={r['ok']} failed={r['failed']} cgroup_peak={r['cgroup_peak_mb']}MB anon/file_end={r['cgroup_end_anon_mb']}/{r['cgroup_end_file_mb']} oom_kill={r['cgroup_events'].get('oom_kill')} server_died={r['server_died']} warm_ms={r['warm_median_ms']} error={r['first_error']}")
+          else: print("**${{ matrix.name }}**: no RESULT (container killed or timed out)")
+          PY
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with: { name: "result-${{ matrix.name }}", path: out.txt }

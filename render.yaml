@@ -1,32 +1,29 @@
-# Render.com blueprint for the FastAPI model service (Cloud #2) -- ONNX backend, Render Free.
+# Render.com blueprint for the FastAPI model service (Cloud #2) -- plain PyTorch backend, Render Free.
 # In the Render dashboard: New -> Blueprint -> point at this repo.
 # Set SUPABASE_URL and SUPABASE_SERVICE_KEY as environment variables (secrets)
 # in the service settings after the first deploy.
 #
 # Free-tier design (512 MB RAM, 0.1 CPU, ephemeral disk, ~1 min cold start after 15 min idle):
-#   * TRIOFORMER_BACKEND=onnx -> api/onnx_pipelines.py: int8 ONNX Runtime, memory-mapped weights,
-#     ONE model resident at a time, no torch / transformers in the install.
-#   * The ~686 MB of model files are NOT in git. The build step downloads them from the GitHub Release
-#     listed in models/manifest.json and verifies SHA-256 (scripts/fetch_models.py). The build fails
-#     loudly if the release is missing or a checksum is wrong.
-#   * TRIOFORMER_AUTO_FETCH=1 is a safety net: if the files built into the image are not present at
-#     runtime, the first request for a model downloads just that model (slow, but not a dead service).
+#   * api/model_pipelines.py keeps ONE pretrained model resident at a time (loading another evicts the
+#     previous one). Measured on Linux in a 512 MB cgroup: ~320 MB non-reclaimable memory, no OOM kills.
+#   * The three small checkpoints (prajjwal1/bert-small, erwanf/gpt2-mini, t5-small; ~0.5 GB on disk) are
+#     downloaded from the Hugging Face Hub at BUILD time into HF_HOME (inside the build directory, so they
+#     survive until runtime). If that cache is ever missing, the first request downloads just that model.
+#   * One uvicorn worker, one inference at a time (TRIOFORMER_MAX_CONCURRENT_INFERENCES=1), 1 thread.
 services:
   - type: web
     name: former-it-api
     runtime: python
     plan: free
-    buildCommand: "pip install -r api/requirements.txt && python scripts/fetch_models.py"
-    startCommand: "uvicorn api.main:app --host 0.0.0.0 --port $PORT"
+    buildCommand: "pip install -r api/requirements.txt && python scripts/download_models.py"
+    startCommand: "uvicorn api.main:app --host 0.0.0.0 --port $PORT --workers 1"
     healthCheckPath: /healthz
     envVars:
       - key: PYTHON_VERSION
         value: "3.11.9"
-      - key: TRIOFORMER_BACKEND
-        value: "onnx"
-      - key: TRIOFORMER_AUTO_FETCH
-        value: "1"
-      - key: TRIOFORMER_ORT_THREADS
+      - key: HF_HOME
+        value: "/opt/render/project/src/.hf-cache"
+      - key: OMP_NUM_THREADS
         value: "1"
       - key: TOKENIZERS_PARALLELISM
         value: "false"

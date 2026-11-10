@@ -1,6 +1,0 @@
-# Environment for scripts/export_onnx.py (builds the quantized ONNX files). Use a SEPARATE virtualenv:
-# onnx pulls a newer protobuf than the Streamlit UI pins (protobuf<6), so this is not part of requirements-dev.
--r requirements-torch.txt
--r api/requirements.txt
-onnx==1.23.2
-numpy==1.26.4

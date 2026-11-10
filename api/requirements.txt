@@ -1,13 +1,17 @@
-# API tier (deployed on Render.com) -- ONNX backend (TRIOFORMER_BACKEND=onnx).
-# Deliberately NO torch and NO transformers: Render Free has 512 MB RAM and 0.1 CPU. The PyTorch
-# reference implementation (api/model_pipelines.py, api/encoder_demo.py) needs requirements-torch.txt.
-# Model files are not Python packages: they are downloaded by scripts/fetch_models.py (see render.yaml).
+# API tier (deployed on Render.com Free: 512 MB RAM, 0.1 CPU) -- plain PyTorch + Hugging Face Transformers.
+# CPU-only torch wheels on Linux come from the extra index below (the default PyPI wheel bundles CUDA and is
+# ~2 GB, far too big for the free build). On macOS/Windows pip simply uses the normal wheel.
+# Deliberately NOT installed: accelerate (importing it costs ~80 MB of RAM and Transformers does not need it).
+--extra-index-url https://download.pytorch.org/whl/cpu
+torch==2.4.1
+transformers==4.44.2
+huggingface-hub==0.36.2
+# torch 2.4.1 wheels are built against NumPy 1.x
+numpy==1.26.4
+# only needed if a tokenizer has to be converted from its SentencePiece model (t5-small ships tokenizer.json)
+sentencepiece==0.2.0
 fastapi==0.115.0
 uvicorn[standard]==0.30.6
 pydantic==2.9.2
-numpy==1.26.4
 supabase==2.7.4
 python-dotenv==1.0.1
-onnxruntime==1.31.1
-# 0.19.1 is the newest release both the light runtime and transformers==4.44.2 (dev/export) accept.
-tokenizers==0.19.1

@@ -4,25 +4,28 @@ Standalone (no FastAPI, no database): every public function takes plain Python
 values and returns a frozen dataclass, so it can be unit-tested with mocks and
 wrapped by HTTP routes later.
 
-Checkpoints (Hugging Face Hub), weights loaded in float32 on CPU:
+Checkpoints (Hugging Face Hub), weights loaded in float32 on CPU with plain PyTorch:
 
-==================  ============  ======  =======================================
-task                checkpoint    params  approx. RAM once loaded (weights only)
-==================  ============  ======  =======================================
-masked-token        bert-base-    110 M   ~0.45 GB
-                    uncased
-continuation        gpt2          124 M   ~0.50 GB
-summarization       t5-small      60 M    ~0.25 GB
-==================  ============  ======  =======================================
+==================  ======================  ======  ========  ===========================
+task                checkpoint              params  fp32 size  context window
+==================  ======================  ======  ========  ===========================
+masked-token        prajjwal1/bert-small    28.8 M  115 MB     512 tokens
+continuation        erwanf/gpt2-mini        38.6 M  154 MB     512 tokens (prompt + output)
+summarization       t5-small                60.5 M  242 MB     512 input tokens
+==================  ======================  ======  ========  ===========================
 
-Add roughly 0.3-0.5 GB for the PyTorch runtime itself. All three resident
-together is ~1.2 GB of weights; see :func:`clear_model_cache` if memory matters.
+These are deliberately small so the whole service fits Render Free (512 MB RAM). Measured on
+Linux in a 512 MB cgroup (see README "Memory"): one model at a time plus FastAPI, PyTorch and
+Supabase uses ~320 MB of non-reclaimable memory; the OOM threshold is ~360 MB. Loading all three
+at once also survived at 512 MB but leaves far less margin, so only ONE model is kept resident.
 
 Design notes
 ------------
-* **Lazy + cached**: a model/tokenizer pair is loaded on first use and kept in
-  a process-wide cache guarded by a lock, so repeated (and concurrent) requests
-  never reload it. A failed load is NOT cached, so a later call can retry.
+* **Lazy, cached, ONE at a time**: a model/tokenizer pair is loaded on first use and kept in
+  a process-wide cache guarded by a lock, so repeated (and concurrent) requests for the same
+  model never reload it. Asking for a DIFFERENT model first evicts the resident one
+  (``gc.collect()`` + ``malloc_trim``), which keeps peak memory under Render Free's limit.
+  A failed load is NOT cached, so a later call can retry.
 * **Validate first, load second**: cheap checks (empty text, ``[MASK]`` count,
   length, generation limits) run BEFORE any model is loaded, so bad requests
   never trigger a multi-hundred-MB download.
@@ -37,10 +40,12 @@ Quality caveats
   ungrammatical. Treat them as a demo of the pipeline, not as production-quality
   summaries. It was trained mainly on news-style text (CNN/DailyMail among its
   multi-task data) and handles short, article-like inputs best.
-* ``gpt2`` (the original 124 M model) continues text fluently but has no
-  factual grounding and no safety tuning; greedy decoding tends to repeat, which
-  ``no_repeat_ngram_size`` only partly mitigates.
-* ``bert-base-uncased`` lowercases its input, so predictions are lowercase.
+* ``erwanf/gpt2-mini`` (38.6 M parameters, GPT-2 architecture, trained on OpenWebText) continues
+  text fluently for a sentence or two, then drifts and may repeat itself; it has no factual
+  grounding and no safety tuning. ``no_repeat_ngram_size`` only partly mitigates repetition.
+* ``prajjwal1/bert-small`` (28.8 M, 4 layers) is a genuinely pretrained masked-LM but weaker than
+  bert-base: it ranks sensible candidates (e.g. "paris" first for the capital of France) with
+  lower confidence. It lowercases its input, so predictions are lowercase.
 
 Environment:
     ``TRIOFORMER_HF_LOCAL_ONLY=1`` makes loading fail instead of downloading
@@ -49,6 +54,7 @@ Environment:
 """
 from __future__ import annotations
 
+import gc
 import os
 import threading
 from dataclasses import dataclass
@@ -59,16 +65,16 @@ import torch
 # --------------------------------------------------------------------------- #
 # Checkpoints and limits
 # --------------------------------------------------------------------------- #
-BERT_MODEL = "bert-base-uncased"
-GPT2_MODEL = "gpt2"
+BERT_MODEL = "prajjwal1/bert-small"
+GPT2_MODEL = "erwanf/gpt2-mini"
 T5_MODEL = "t5-small"
 
 MASK_TOKEN = "[MASK]"
 T5_PREFIX = "summarize: "
 
 MAX_INPUT_CHARS = 4000        # cheap pre-load guard against huge payloads
-BERT_MAX_TOKENS = 512         # bert-base-uncased position embeddings
-GPT2_CONTEXT = 1024           # gpt2 context window (prompt + generated)
+BERT_MAX_TOKENS = 512         # bert-small position embeddings
+GPT2_CONTEXT = 512            # gpt2-mini context window (prompt + generated)
 T5_MAX_INPUT_TOKENS = 512     # t5-small was trained on 512-token inputs
 MAX_NEW_TOKENS_LIMIT = 128    # hard cap on generated tokens per request
 BERT_MAX_TOP_K = 10
@@ -168,8 +174,23 @@ def _load_bundle(name: str, kind: str) -> _Bundle:
     return _Bundle(tokenizer=tokenizer, model=model)
 
 
+def _release_memory() -> None:
+    """Collect garbage and hand freed heap pages back to the OS (glibc only; best effort)."""
+    gc.collect()
+    try:
+        import ctypes
+
+        ctypes.CDLL("libc.so.6").malloc_trim(0)
+    except (OSError, AttributeError):  # not Linux/glibc (e.g. macOS, Windows, musl)
+        pass
+
+
 def _get_bundle(name: str, kind: str) -> _Bundle:
-    """Return the cached bundle for ``name``, loading it once on first use."""
+    """Return the cached bundle for ``name``, loading it on first use.
+
+    Only ONE checkpoint stays resident: loading ``name`` first evicts any other model, so the
+    process never holds two sets of weights (Render Free has 512 MB of RAM).
+    """
     bundle = _CACHE.get(name)
     if bundle is not None:
         return bundle
@@ -177,6 +198,9 @@ def _get_bundle(name: str, kind: str) -> _Bundle:
         bundle = _CACHE.get(name)  # another thread may have loaded it while we waited
         if bundle is not None:
             return bundle
+        if _CACHE:                  # evict the previous model BEFORE loading the next one
+            _CACHE.clear()
+            _release_memory()
         try:
             bundle = _load_bundle(name, kind)
         except Exception as exc:  # noqa: BLE001 - normalise every loader failure
@@ -191,6 +215,7 @@ def clear_model_cache() -> None:
     """Drop all cached models (frees memory; next call reloads)."""
     with _LOCK:
         _CACHE.clear()
+    _release_memory()
 
 
 def loaded_models() -> List[str]:
@@ -198,8 +223,11 @@ def loaded_models() -> List[str]:
     return sorted(_CACHE)
 
 
-def preload(names: Tuple[str, ...] = (BERT_MODEL, GPT2_MODEL, T5_MODEL)) -> None:
-    """Optionally warm the cache (e.g. at server start)."""
+def preload(names: Tuple[str, ...] = (T5_MODEL,)) -> None:
+    """Load checkpoints ahead of time (e.g. at server start).
+
+    Only one model stays resident, so with several names the LAST one wins.
+    """
     kinds = {BERT_MODEL: "mlm", GPT2_MODEL: "causal", T5_MODEL: "seq2seq"}
     for name in names:
         _get_bundle(name, kinds[name])
@@ -301,7 +329,7 @@ def gpt2_continue(prompt: str, max_new_tokens: int = 40) -> GenerationResult:
     Returns only the newly generated text, never the prompt.
 
     Raises:
-        InvalidInputError: bad prompt/limits, or prompt + max_new_tokens > 1024.
+        InvalidInputError: bad prompt/limits, or prompt + max_new_tokens > 512.
         ModelLoadError: the checkpoint could not be loaded.
     """
     prompt = _check_text(prompt, "prompt")

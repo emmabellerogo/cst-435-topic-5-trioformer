@@ -79,6 +79,8 @@ former-it/
 │   └── data.py               # Synthetic palindrome sequence generator + class contract
 ├── api/                      # FastAPI tier (deploys to Render)
 │   ├── main.py               # Endpoints
+│   ├── model_pipelines.py    # Pretrained BERT / GPT-2 / T5 inference (one model resident at a time)
+│   ├── encoder_demo.py       # Educational attention heatmaps from our own encoder
 │   ├── training.py           # From-scratch Transformer encoder + artifact (de)serialization
 │   ├── db.py                 # Supabase (service-role) data access
 │   ├── configs/default.yaml
@@ -90,6 +92,11 @@ former-it/
 ├── db/
 │   ├── migrations/001_init.sql
 │   └── seed.py
+├── src/transformer.py        # The from-scratch Transformer encoder
+├── benchmarks/               # Custom encoder vs torch.nn encoder benchmark
+├── scripts/
+│   ├── download_models.py    # Fetch the 3 checkpoints from the Hugging Face Hub (Render build step)
+│   └── linux_check/          # Render-like 512 MB Linux memory check (run by .github/workflows)
 ├── tests/                    # pytest suite
 ├── render.yaml               # Render blueprint
 ├── requirements-dev.txt
@@ -104,7 +111,9 @@ cd former-it
 python -m venv .venv && source .venv/bin/activate
 pip install -r requirements-dev.txt
 
-pytest -q            # tests pass; the live-Supabase test skips without creds
+pytest -q            # tests pass; the live-Supabase test skips without creds.
+                     # (the first `pip install` downloads CPU PyTorch, ~200 MB; real-model smoke test is opt-in:
+                     #  RUN_HF_SMOKE_DOWNLOAD=1 pytest tests/test_model_pipelines_smoke.py -s)
 
 cp .env.example .env                                   # API: SUPABASE_URL + SERVICE key
 cp ui/.streamlit/secrets.toml.example ui/.streamlit/secrets.toml
@@ -129,8 +138,54 @@ To deploy to the three clouds, follow **Part E** of the main
 | `POST` | `/predict` | Classify a symbol sequence; return per-head attention; log the hash |
 | `POST` | `/predict_sample` | Generate + classify a sample; return attention |
 | `GET`  | `/classes` | The class labels the model predicts over |
-| `GET`  | `/healthz` | Liveness / DB ping |
-| `GET`  | `/version` | Build SHA + torch version |
+| `GET`  | `/healthz` | Liveness / DB ping / resident model |
+| `GET`  | `/version` | Build SHA + torch / transformers version + checkpoints |
+
+### TrioFormer endpoints (pretrained BERT, GPT-2 and T5 + our own encoder)
+
+| Method | Path | Model | Purpose |
+|--------|------|-------|---------|
+| `POST` | `/bert_fillmask` | `prajjwal1/bert-small` | Masked-token prediction for one `[MASK]` |
+| `POST` | `/gpt2_continue` | `erwanf/gpt2-mini` | Greedy text continuation |
+| `POST` | `/t5_summarize` | `t5-small` | Abstractive summarization (`summarize:` prefix, beam search) |
+| `POST` | `/encoder_attention` | our `src/transformer.py` (untrained) | Educational per-head attention heatmap |
+| `GET`  | `/benchmarks` | – | Per-model latency statistics from Supabase |
+
+Every pretrained call logs only the SHA-256 of the input, the model name, the output and the server-side
+latency to Supabase (`inputs` / `inferences`). The models are loaded with plain PyTorch + Hugging Face
+Transformers (no ONNX, no quantization, no custom export) and are **deliberately small** so the whole
+service fits Render Free:
+
+| Task | Checkpoint | Params | Size (fp32) | Context |
+|------|------------|--------|-------------|---------|
+| BERT masked-token | `prajjwal1/bert-small` | 28.8 M | 115 MB | 512 |
+| GPT-2 continuation | `erwanf/gpt2-mini` | 38.6 M | 154 MB | 512 |
+| T5 summarization | `t5-small` | 60.5 M | 242 MB | 512 in |
+
+They are real pretrained checkpoints with working heads (a masked-LM head for BERT, the GPT-2 LM head, and
+T5's summarization pre-training), but far smaller than `bert-base` / `gpt2` / `t5-base`, so expect weaker
+quality: BERT ranks sensible words with modest confidence, GPT-2 drifts and repeats after a sentence or
+two, and T5 mostly copies and lower-cases sentences. Example outputs are in `MODEL_CARD.md`.
+
+### Memory and the Render Free limits (512 MB RAM, 0.1 CPU)
+
+* Only **one** pretrained model is resident at a time: asking for a different model evicts the current one
+  (`api/model_pipelines.py::_get_bundle`). Switching models is therefore a *cold start*
+  (`cold_start: true`; the load time is excluded from `latency_ms`).
+* Measured on Linux (GitHub Actions, Docker `--memory=512m --memory-swap=512m`, real FastAPI app, Supabase
+  mocked, 57 requests switching bert→gpt→t5 repeatedly): **no OOM kills, 0 failed requests**, ~320 MB of
+  non-reclaimable memory. The OOM-kill threshold was between 352 and 384 MB, leaving roughly 130 MB of
+  headroom at 512 MB. Re-run it any time: *Actions → PyTorch Linux check → Run workflow*.
+* Expect **slow** responses at 0.1 CPU (measured: GPT-2 ≈ 6 s, T5 ≈ 12–16 s warm) and a slower first request
+  after Render's 15-minute idle spin-down.
+* Do not add `accelerate` to the requirements (it costs ~80 MB of RAM), and keep `--workers 1`.
+
+### Deploying the API to Render Free
+
+`render.yaml` is a ready blueprint: build = `pip install -r api/requirements.txt && python
+scripts/download_models.py` (CPU-only torch from the PyTorch index, weights from the Hugging Face Hub into
+`HF_HOME`). Set `SUPABASE_URL` and `SUPABASE_SERVICE_KEY` as secrets, then apply
+`db/migrations/001_init.sql` and `002_trioformer.sql` in Supabase.
 
 ## Checklist
 

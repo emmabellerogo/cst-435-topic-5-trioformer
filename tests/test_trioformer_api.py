@@ -68,8 +68,8 @@ T5_BODY = {"text": "the council approved a new bike lane network downtown", "max
 @pytest.mark.parametrize(
     "path,body,text_key,model",
     [
-        ("/bert_fillmask", BERT_BODY, "text", "bert-base-uncased"),
-        ("/gpt2_continue", GPT_BODY, "prompt", "gpt2"),
+        ("/bert_fillmask", BERT_BODY, "text", "prajjwal1/bert-small"),
+        ("/gpt2_continue", GPT_BODY, "prompt", "erwanf/gpt2-mini"),
         ("/t5_summarize", T5_BODY, "text", "t5-small"),
     ],
 )
@@ -118,7 +118,7 @@ def test_cold_start_flag_and_load_time_excluded_from_latency(api, loader):
     second = api.post("/gpt2_continue", json=GPT_BODY).json()
     assert first["cold_start"] is True and second["cold_start"] is False
     assert first["latency_ms"] < 300  # would be >= 400 if loading were timed
-    assert loader.calls == ["gpt2"]   # loaded once
+    assert loader.calls == ["erwanf/gpt2-mini"]   # loaded once
 
 
 def test_latency_is_measured_with_perf_counter(api, fdb, monkeypatch):
@@ -271,7 +271,7 @@ def test_healthz_reports_components_separately_without_loading_models(api, loade
                  "models_loaded": [], "model_loader_detail": None, "backend": "torch"}
     assert loader.calls == []  # no download forced
     api.post("/gpt2_continue", json=GPT_BODY)
-    assert api.get("/healthz").json()["models_loaded"] == ["gpt2"]
+    assert api.get("/healthz").json()["models_loaded"] == ["erwanf/gpt2-mini"]
 
 
 def test_healthz_database_down_is_degraded_but_models_ok(api, fdb):
@@ -294,7 +294,7 @@ def test_healthz_missing_transformers_is_reported(api, monkeypatch):
 def test_version_endpoint(api):
     j = api.get("/version").json()
     assert j["torch_version"] and j["git_sha"] and j["app_version"] == "2.0.0"
-    assert j["checkpoints"] == {"/bert_fillmask": "bert-base-uncased", "/gpt2_continue": "gpt2",
+    assert j["checkpoints"] == {"/bert_fillmask": "prajjwal1/bert-small", "/gpt2_continue": "erwanf/gpt2-mini",
                                 "/t5_summarize": "t5-small"}
 
 
@@ -303,7 +303,7 @@ def test_benchmarks_returns_rows_and_refresh_metadata(api, fdb):
     r = api.get("/benchmarks")
     assert r.status_code == 200
     j = r.json()
-    assert [b["model_name"] for b in j["benchmarks"]] == ["gpt2", "t5-small"]
+    assert [b["model_name"] for b in j["benchmarks"]] == ["erwanf/gpt2-mini", "t5-small"]
     g = j["benchmarks"][0]
     assert g["p95_latency_ms"] == 150.0 and g["n_inferences"] == 4
     ref = j["refresh"]
@@ -375,3 +375,14 @@ def test_all_seven_endpoints_documented_with_examples(api):
         assert schemas[name]["examples"], name
         assert all(p.get("description") for p in schemas[name]["properties"].values()), name
     assert "503" in spec["paths"]["/gpt2_continue"]["post"]["responses"]
+
+
+def test_switching_models_through_the_api_keeps_one_resident_and_flags_cold_start(api):
+    seen = []
+    for path, body in (("/bert_fillmask", BERT_BODY), ("/gpt2_continue", GPT_BODY), ("/t5_summarize", T5_BODY),
+                       ("/t5_summarize", T5_BODY), ("/bert_fillmask", BERT_BODY)):
+        j = api.post(path, json=body).json()
+        seen.append((j["model"], j["cold_start"]))
+        assert len(api.get("/healthz").json()["models_loaded"]) == 1
+    assert seen == [("prajjwal1/bert-small", True), ("erwanf/gpt2-mini", True), ("t5-small", True),
+                    ("t5-small", False), ("prajjwal1/bert-small", True)]

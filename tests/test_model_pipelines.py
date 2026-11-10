@@ -112,7 +112,7 @@ def fake_loader(monkeypatch):
 # -------------------------------------------------------------------- BERT
 def test_bert_returns_ranked_predictions_and_filled_sentence(fake_loader):
     r = mp.bert_fill_mask("the capital of france is [MASK] .", top_k=3)
-    assert r.model == "bert-base-uncased"
+    assert r.model == "prajjwal1/bert-small"
     assert [p.token for p in r.predictions] == ["paris", "ing", "<9>"]
     assert r.predictions[0].sequence == "the capital of france is paris ."
     assert r.output_text == r.predictions[0].sequence
@@ -162,7 +162,7 @@ def test_non_string_and_oversized_text_rejected(fake_loader):
 # ------------------------------------------------------------------- GPT-2
 def test_gpt2_returns_only_continuation_not_prompt(fake_loader):
     r = mp.gpt2_continue("once upon a time", max_new_tokens=10)
-    assert r.model == "gpt2"
+    assert r.model == "erwanf/gpt2-mini"
     assert "once" not in r.output_text and "upon" not in r.output_text
     assert r.prompt_tokens == 4
     assert r.generated_tokens == 3          # 2 words + EOS (EOS is skipped in the text)
@@ -188,10 +188,10 @@ def test_gpt2_max_new_tokens_validation(n, fake_loader):
 
 
 def test_gpt2_prompt_plus_new_tokens_must_fit_context(fake_loader):
-    prompt = "a " * 1000                    # 1000 tokens, 2000 chars
+    prompt = "a " * 488                     # 488 tokens (gpt2-mini context is 512)
     with pytest.raises(mp.InvalidInputError, match="context window"):
         mp.gpt2_continue(prompt, max_new_tokens=40)
-    assert mp.gpt2_continue(prompt, max_new_tokens=24).prompt_tokens == 1000  # exactly fits
+    assert mp.gpt2_continue(prompt, max_new_tokens=24).prompt_tokens == 488  # exactly fits
 
 
 # ---------------------------------------------------------------------- T5
@@ -243,14 +243,61 @@ def test_outputs_are_reproducible(fake_loader):
 
 
 # -------------------------------------------------------- caching / loading
-def test_models_load_lazily_and_only_once(fake_loader):
+def test_models_load_lazily_and_only_once_per_model(fake_loader):
     assert fake_loader.calls == [] and mp.loaded_models() == []   # nothing at import time
-    for _ in range(3):
-        mp.bert_fill_mask("a [MASK] b")
+    for _ in range(3):                      # repeated requests for ONE model never reload it
         mp.gpt2_continue("hello")
-        mp.t5_summarize("hello world")
-    assert sorted(fake_loader.calls) == sorted([mp.BERT_MODEL, mp.GPT2_MODEL, mp.T5_MODEL])
-    assert mp.loaded_models() == sorted([mp.BERT_MODEL, mp.GPT2_MODEL, mp.T5_MODEL])
+    assert fake_loader.calls == [mp.GPT2_MODEL] and mp.loaded_models() == [mp.GPT2_MODEL]
+
+
+def test_only_one_model_is_resident_switching_evicts_the_previous(fake_loader):
+    mp.bert_fill_mask("a [MASK] b")
+    assert mp.loaded_models() == [mp.BERT_MODEL]
+    mp.gpt2_continue("hello")
+    assert mp.loaded_models() == [mp.GPT2_MODEL]            # bert was evicted
+    mp.t5_summarize("hello world")
+    assert mp.loaded_models() == [mp.T5_MODEL]
+    mp.bert_fill_mask("a [MASK] b")                         # coming back reloads it
+    assert fake_loader.calls == [mp.BERT_MODEL, mp.GPT2_MODEL, mp.T5_MODEL, mp.BERT_MODEL]
+    assert mp.loaded_models() == [mp.BERT_MODEL]
+
+
+def test_eviction_actually_frees_the_old_model(monkeypatch):
+    import gc
+    import weakref
+
+    # a loader that keeps NO reference of its own (the shared fixture records models in a dict)
+    monkeypatch.setattr(mp, "_load_bundle", lambda name, kind: mp._Bundle(FakeTokenizer(), FakeBert()))
+    mp.clear_model_cache()
+    mp._get_bundle(mp.BERT_MODEL, "mlm")
+    ref = weakref.ref(mp._CACHE[mp.BERT_MODEL].model)
+    mp._get_bundle(mp.GPT2_MODEL, "causal")                 # evicts bert
+    gc.collect()
+    assert ref() is None                                    # nothing else holds the weights
+
+
+def test_failed_load_after_eviction_leaves_cache_empty_and_retries(monkeypatch, fake_loader):
+    mp.bert_fill_mask("a [MASK] b")
+    good = mp._load_bundle
+
+    def broken(name, kind):
+        raise OSError("disk full")
+    monkeypatch.setattr(mp, "_load_bundle", broken)
+    with pytest.raises(mp.ModelLoadError):
+        mp.gpt2_continue("hello")
+    assert mp.loaded_models() == []                         # old model gone, failure not cached
+    monkeypatch.setattr(mp, "_load_bundle", good)
+    assert mp.gpt2_continue("hello").output_text               # a later call recovers
+
+
+def test_preload_keeps_only_the_last_model(fake_loader):
+    mp.preload((mp.BERT_MODEL, mp.T5_MODEL))
+    assert mp.loaded_models() == [mp.T5_MODEL]
+
+
+def test_checkpoints_are_the_small_models():
+    assert (mp.BERT_MODEL, mp.GPT2_MODEL, mp.T5_MODEL) == ("prajjwal1/bert-small", "erwanf/gpt2-mini", "t5-small")
+    assert mp.GPT2_CONTEXT == 512 and mp.BERT_MAX_TOKENS == 512
 
 
 def test_concurrent_first_requests_load_once(monkeypatch, fake_loader):

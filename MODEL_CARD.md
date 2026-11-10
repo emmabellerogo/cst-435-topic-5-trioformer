@@ -60,3 +60,27 @@
   NLP system. The per-head heatmaps build intuition by showing where the model
   looks, but a striking pattern is not proof of correctness — disclose the
   held-out metrics and caveats.
+
+## Pretrained models served by TrioFormer (BERT, GPT-2, T5)
+Alongside the from-scratch encoder, the API serves three small **pretrained** checkpoints through plain
+PyTorch + Hugging Face Transformers (CPU, float32, no quantization or export), one resident at a time so the
+service fits Render Free (512 MB RAM):
+
+| Architecture | Checkpoint | Params | Task / training signal | Endpoint |
+|---|---|---|---|---|
+| BERT (encoder, bidirectional) | `prajjwal1/bert-small` | 28.8 M | masked-language-model head pre-trained on text | `/bert_fillmask` |
+| GPT-2 (decoder, causal) | `erwanf/gpt2-mini` | 38.6 M | next-token prediction on OpenWebText (MIT licence) | `/gpt2_continue` |
+| T5 (encoder-decoder) | `t5-small` | 60.5 M | multi-task text-to-text incl. CNN/DailyMail summarization | `/t5_summarize` |
+
+Real outputs (CPU, deterministic decoding):
+- BERT, `The capital of France is [MASK].` → `paris` (0.156), `brittany`, `france`.
+- GPT-2, `The scientist opened the old laboratory door and` → ` opened the door to the laboratory. "The scientists were very impressed with the work of the scientists," said Dr. David H. H., a professor of chemistry…`
+- T5, a 3-sentence Apollo 11 paragraph → `the Apollo 11 mission landed the first humans on the moon on July 20, 1969. the crew returned safely to earth on July 24 after collecting 47.5 pounds of lunar material.`
+
+Limitations specific to these small models: BERT-small is much less confident than bert-base; GPT-2-mini
+is coherent for a sentence or two, then drifts, repeats and invents facts (no factual grounding, no safety
+tuning); T5-small summaries are mostly extractive, lower-cased, and can drop details. They are demonstrations
+of the three architectures, not production-quality language models. Why *these* checkpoints: smaller
+alternatives were tested and rejected because they do not do the task (`sshleifer/tiny-gpt2` has random
+weights and emits gibberish; `google/t5-efficient-tiny` returns an empty summary; `bert-tiny` predicts poorly).
+Only a SHA-256 of each input is stored, never the text.

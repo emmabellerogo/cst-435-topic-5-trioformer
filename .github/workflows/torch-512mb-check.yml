@@ -41,10 +41,10 @@ jobs:
           if [ "${{ matrix.models }}" = small ]; then M='{"bert":"prajjwal1/bert-small","gpt":"erwanf/gpt2-mini","t5":"t5-small"}'
           else M='{"bert":"prajjwal1/bert-small","gpt":"erwanf/gpt2-mini","t5":"LaurentBlanc/t5-efficient-mini-finetuned"}'; fi
           sync; echo 3 | sudo tee /proc/sys/vm/drop_caches >/dev/null   # this container pays for its own file pages
-          timeout 600 docker run --name c --memory=${{ matrix.limit }}m --memory-swap=${{ matrix.limit }}m --cpus=0.5 \
+          timeout 600 docker run --name trio_case --memory=${{ matrix.limit }}m --memory-swap=${{ matrix.limit }}m --cpus=0.5 \
             -v "$PWD/hf:/hf" -e HF_HUB_OFFLINE=1 -e SEQUENTIAL=${{ matrix.seq }} -e CASE_MODELS="$M" trio512 \
             python -m linux512.run_case ${{ matrix.name }} "${{ matrix.only }}" 4 2>&1 | tee out.txt
-          echo "docker OOMKilled=$(docker inspect -f '{{.State.OOMKilled}}' c) ExitCode=$(docker inspect -f '{{.State.ExitCode}}' c)" | tee -a out.txt
+          echo "docker OOMKilled=$(docker inspect -f '{{.State.OOMKilled}}' trio_case) ExitCode=$(docker inspect -f '{{.State.ExitCode}}' trio_case)" | tee -a out.txt
           python3 - <<'PY' >> "$GITHUB_STEP_SUMMARY"
           import json
           r = None

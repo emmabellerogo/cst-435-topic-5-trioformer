@@ -3,6 +3,8 @@
 # Database calls are mocked; nothing is deployed.
 name: Torch 512MB check
 on:
+  push:
+    branches: [test/linux-512mb-torch]
   workflow_dispatch:
     inputs:
       cpus:
@@ -30,7 +32,7 @@ jobs:
           M='{"bert":"prajjwal1/bert-small","gpt":"erwanf/gpt2-mini","t5":"LaurentBlanc/t5-efficient-mini-finetuned"}'
           run() { # name models only rounds seq
             echo "::group::$1"
-            docker run --name "c_$1" --memory=512m --memory-swap=512m --cpus=${{ inputs.cpus }} \
+            docker run --name "c_$1" --memory=512m --memory-swap=512m --cpus=${{ inputs.cpus || '0.5' }} \
               -v "$PWD/hf:/hf" -e HF_HUB_OFFLINE=1 -e SEQUENTIAL=$5 -e CASE_MODELS="$2" trio512 \
               python -m linux512.run_case "$1" "$3" "$4" | tee "out_$1.txt"
             echo "docker exit=$? OOMKilled=$(docker inspect -f '{{.State.OOMKilled}}' c_$1) ExitCode=$(docker inspect -f '{{.State.ExitCode}}' c_$1)" | tee -a "out_$1.txt"

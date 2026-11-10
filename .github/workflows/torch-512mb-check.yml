@@ -1,0 +1,62 @@
+# TEMPORARY test (branch test/linux-512mb-torch only): do plain PyTorch + Transformers + the real FastAPI app fit
+# in Render Free's 512 MB? Each case runs in a Docker container with a hard 512 MB cgroup limit (swap disabled).
+# Database calls are mocked; nothing is deployed.
+name: Torch 512MB check
+on:
+  workflow_dispatch:
+    inputs:
+      cpus:
+        description: "CPU limit (Render Free is ~0.1)"
+        default: "0.5"
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build image
+        run: docker build -f linux512/Dockerfile -t trio512 .
+      - name: Pre-download checkpoints into a volume (not memory-limited)
+        run: |
+          mkdir -p hf && chmod 777 hf
+          docker run --rm -v "$PWD/hf:/hf" trio512 python -c "
+          from huggingface_hub import snapshot_download
+          for n in ['prajjwal1/bert-small','erwanf/gpt2-mini','t5-small','LaurentBlanc/t5-efficient-mini-finetuned']:
+              snapshot_download(n, allow_patterns=['*.json','*.txt','*.safetensors','*.model'])"
+      - name: Run cases under 512 MB
+        run: |
+          set +e
+          S='{"bert":"prajjwal1/bert-small","gpt":"erwanf/gpt2-mini","t5":"t5-small"}'
+          M='{"bert":"prajjwal1/bert-small","gpt":"erwanf/gpt2-mini","t5":"LaurentBlanc/t5-efficient-mini-finetuned"}'
+          run() { # name models only rounds seq
+            echo "::group::$1"
+            docker run --name "c_$1" --memory=512m --memory-swap=512m --cpus=${{ inputs.cpus }} \
+              -v "$PWD/hf:/hf" -e HF_HUB_OFFLINE=1 -e SEQUENTIAL=$5 -e CASE_MODELS="$2" trio512 \
+              python -m linux512.run_case "$1" "$3" "$4" | tee "out_$1.txt"
+            echo "docker exit=$? OOMKilled=$(docker inspect -f '{{.State.OOMKilled}}' c_$1) ExitCode=$(docker inspect -f '{{.State.ExitCode}}' c_$1)" | tee -a "out_$1.txt"
+            echo "::endgroup::"
+          }
+          run bert_only      "$S" bert 4 1
+          run gpt_only       "$S" gpt  4 1
+          run t5_only        "$S" t5   4 1
+          run sequential     "$S" bert,gpt,t5 4 1
+          run t5mini_only    "$M" t5   4 1
+          run sequential_t5mini "$M" bert,gpt,t5 4 1
+          run all_resident   "$S" bert,gpt,t5 4 0
+      - name: Summary
+        if: always()
+        run: |
+          python3 - <<'PY' >> "$GITHUB_STEP_SUMMARY"
+          import glob, json
+          print("| case | ok/failed | idle RSS | server HWM | cgroup peak | OOM kills | server died | docker OOMKilled | warm median ms |\n|---|---|---|---|---|---|---|---|---|")
+          for f in sorted(glob.glob("out_*.txt")):
+              t = open(f).read(); r = None; d = ""
+              for l in t.splitlines():
+                  if l.startswith("RESULT "): r = json.loads(l[7:])
+                  if l.startswith("docker exit"): d = l
+              if not r: print(f"| {f} | no result | | | | | | {d} | |"); continue
+              print(f"| {r['case']} | {r['ok']}/{r['failed']} | {r.get('idle_rss_mb') and round(r['idle_rss_mb'])} | {r.get('server_hwm_mb')} | {r['cgroup_peak_mb']} | {r['cgroup_events'].get('oom_kill')} | {r['server_died']} | {d.split('OOMKilled=')[-1]} | {r['warm_median_ms']} |")
+          PY
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with: { name: results, path: out_*.txt }

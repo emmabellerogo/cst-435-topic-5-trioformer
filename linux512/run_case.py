@@ -41,6 +41,8 @@ for i, k in enumerate(seq):
         if srv.poll() is not None: res["server_died"] = True; res["server_exit_code"] = srv.returncode; break
 try: m = c.get("/_mem").json(); res["final_rss_mb"] = round(m["rss_mb"]); res["server_hwm_mb"] = round(m["hwm_mb"])
 except Exception: pass
+st = {l.split()[0]: int(l.split()[1]) for l in (cg("memory.stat") or "").splitlines() if l}
+res["cgroup_end_anon_mb"] = round(st.get("anon", 0)/2**20); res["cgroup_end_file_mb"] = round(st.get("file", 0)/2**20)
 res["cgroup_peak_mb"] = round(peak_mb() or 0); res["cgroup_events"] = oom()
 res["server_alive_at_end"] = srv.poll() is None
 res["warm_median_ms"] = {k: (statistics.median(v[3:]) if len(v) > 3 else None) for k, v in res["lat"].items()}

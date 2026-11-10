@@ -24,15 +24,16 @@ jobs:
           docker run --rm -v "$PWD/hf:/hf" trio512 python -c "
           from huggingface_hub import snapshot_download
           for n in ['prajjwal1/bert-small','erwanf/gpt2-mini','t5-small','LaurentBlanc/t5-efficient-mini-finetuned']:
-              snapshot_download(n, allow_patterns=['*.json','*.txt','*.safetensors','*.model'])"
+              snapshot_download(n, allow_patterns=['*.json','*.txt','*.safetensors','*.model','pytorch_model.bin'])"
       - name: Run cases under 512 MB
         run: |
           set +e
           S='{"bert":"prajjwal1/bert-small","gpt":"erwanf/gpt2-mini","t5":"t5-small"}'
           M='{"bert":"prajjwal1/bert-small","gpt":"erwanf/gpt2-mini","t5":"LaurentBlanc/t5-efficient-mini-finetuned"}'
-          run() { # name models only rounds seq
+          run() { # name models only rounds seq [limit_mb]
             echo "::group::$1"
-            docker run --name "c_$1" --memory=512m --memory-swap=512m --cpus=${{ inputs.cpus || '0.5' }} \
+            sync; echo 3 | sudo tee /proc/sys/vm/drop_caches >/dev/null   # each case pays for its own file pages
+            docker run --name "c_$1" --memory=${6:-512}m --memory-swap=${6:-512}m --cpus=${{ inputs.cpus || '0.5' }} \
               -v "$PWD/hf:/hf" -e HF_HUB_OFFLINE=1 -e SEQUENTIAL=$5 -e CASE_MODELS="$2" trio512 \
               python -m linux512.run_case "$1" "$3" "$4" | tee "out_$1.txt"
             echo "docker exit=$? OOMKilled=$(docker inspect -f '{{.State.OOMKilled}}' c_$1) ExitCode=$(docker inspect -f '{{.State.ExitCode}}' c_$1)" | tee -a "out_$1.txt"
@@ -45,19 +46,24 @@ jobs:
           run t5mini_only    "$M" t5   4 1
           run sequential_t5mini "$M" bert,gpt,t5 4 1
           run all_resident   "$S" bert,gpt,t5 4 0
+          run seq_448MB      "$S" bert,gpt,t5 4 1 448
+          run seq_384MB      "$S" bert,gpt,t5 4 1 384
+          run seq_320MB      "$S" bert,gpt,t5 4 1 320
+          run t5_only_384MB  "$S" t5 4 1 384
+          run t5mini_seq_384MB "$M" bert,gpt,t5 4 1 384
       - name: Summary
         if: always()
         run: |
           python3 - <<'PY' >> "$GITHUB_STEP_SUMMARY"
           import glob, json
-          print("| case | ok/failed | idle RSS | server HWM | cgroup peak | OOM kills | server died | docker OOMKilled | warm median ms |\n|---|---|---|---|---|---|---|---|---|")
+          print("| case | ok/failed | idle RSS | server HWM | cgroup peak | end anon/file | OOM kills | server died | docker OOMKilled | warm median ms |\n|---|---|---|---|---|---|---|---|---|---|")
           for f in sorted(glob.glob("out_*.txt")):
               t = open(f).read(); r = None; d = ""
               for l in t.splitlines():
                   if l.startswith("RESULT "): r = json.loads(l[7:])
                   if l.startswith("docker exit"): d = l
-              if not r: print(f"| {f} | no result | | | | | | {d} | |"); continue
-              print(f"| {r['case']} | {r['ok']}/{r['failed']} | {r.get('idle_rss_mb') and round(r['idle_rss_mb'])} | {r.get('server_hwm_mb')} | {r['cgroup_peak_mb']} | {r['cgroup_events'].get('oom_kill')} | {r['server_died']} | {d.split('OOMKilled=')[-1]} | {r['warm_median_ms']} |")
+              if not r: print(f"| {f} | no result | | | | | | | {d} | |"); continue
+              print(f"| {r['case']} | {r['ok']}/{r['failed']} | {r.get('idle_rss_mb') and round(r['idle_rss_mb'])} | {r.get('server_hwm_mb')} | {r['cgroup_peak_mb']} | {r.get('cgroup_end_anon_mb')}/{r.get('cgroup_end_file_mb')} | {r['cgroup_events'].get('oom_kill')} | {r['server_died']} | {d.split('OOMKilled=')[-1]} | {r['warm_median_ms']} |")
           PY
       - uses: actions/upload-artifact@v4
         if: always()

@@ -1,6 +1,10 @@
-# Model Card — Former-It
+# Model Card — TrioFormer
 
-## Model details
+TrioFormer serves two kinds of models: three small **pretrained** checkpoints (BERT, GPT-2, T5; described in
+the last section) and a **from-scratch Transformer encoder** (the legacy Former-It palindrome classifier,
+described first).
+
+## From-scratch encoder: model details
 - **Type:** a from-scratch tiny **Transformer encoder** — token embedding +
   sinusoidal positional encoding → stacked pre-norm blocks (multi-head
   self-attention + feed-forward, each with a residual connection and layer norm)
@@ -13,13 +17,14 @@
   positions attend to which*.
 - **Training:** per-run hyperparameters (learning rate, batch size, epochs)
   supplied by the API request.
-- **Owner:** your team (add your names).
+- **Owner:** Emma Rogoveanu
 
 ## Intended use
 - **Primary:** an interactive teaching demo of self-attention, multi-head
   Transformer encoders, and attention visualisation across three clouds.
-- **Out of scope:** any real-world NLP task. The model is trained on
-  **synthetic** symbol sequences with a known algorithmic rule.
+- **Out of scope:** any real-world NLP task. This encoder is trained on
+  **synthetic** symbol sequences with a known algorithmic rule. (The `/encoder_attention` endpoint uses an
+  *untrained* encoder block for illustration only.)
 
 ## Data
 - Synthetic integer-symbol sequences (alphabet of 5 symbols, default length 8),

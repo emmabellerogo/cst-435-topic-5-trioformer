@@ -15,7 +15,7 @@ services:
     name: former-it-api
     runtime: python
     plan: free
-    buildCommand: "pip install -r api/requirements.txt && python scripts/download_models.py"
+    buildCommand: "pip install -r api/requirements.txt && python -m scripts.download_models"
     startCommand: "uvicorn api.main:app --host 0.0.0.0 --port $PORT --workers 1"
     healthCheckPath: /healthz
     envVars:

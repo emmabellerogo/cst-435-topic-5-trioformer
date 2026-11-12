@@ -182,8 +182,8 @@ two, and T5 mostly copies and lower-cases sentences. Example outputs are in `MOD
 
 ### Deploying the API to Render Free
 
-`render.yaml` is a ready blueprint: build = `pip install -r api/requirements.txt && python
-scripts/download_models.py` (CPU-only torch from the PyTorch index, weights from the Hugging Face Hub into
+`render.yaml` is a ready blueprint: build =
+`pip install -r api/requirements.txt && python -m scripts.download_models` (CPU-only torch from the PyTorch index, weights from the Hugging Face Hub into
 `HF_HOME`). Set `SUPABASE_URL` and `SUPABASE_SERVICE_KEY` as secrets, then apply
 `db/migrations/001_init.sql` and `002_trioformer.sql` in Supabase.
 

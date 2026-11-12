@@ -1,7 +1,7 @@
 """Download the three TrioFormer checkpoints into the Hugging Face cache (run at build time on Render).
 
-    python scripts/download_models.py            # honours HF_HOME
-    python scripts/download_models.py --list     # just print the checkpoints
+    python -m scripts.download_models            # honours HF_HOME (run from the repo root)
+    python -m scripts.download_models --list     # just print the checkpoints
 
 Only the files from_pretrained() needs are fetched, and only ONE weights format per model
 (safetensors if the repo has it, else pytorch_model.bin), so the cache is ~0.5 GB, not several GB.

@@ -3,11 +3,7 @@
 # Run from the Actions tab -> "PyTorch Linux check" -> Run workflow. Each case is its own job; read the
 # summary of each job: ok/failed requests, cgroup peak, anonymous (non-reclaimable) memory, OOM kills.
 name: PyTorch Linux check
-# NOTE: manual dispatch only works once this file is on the default branch, so it also runs on pushes to
-# simplify-pytorch (with the defaults below). After merging, the push trigger can be removed.
 on:
-  push:
-    branches: [simplify-pytorch]
   workflow_dispatch:
     inputs:
       memory_limit_mb:

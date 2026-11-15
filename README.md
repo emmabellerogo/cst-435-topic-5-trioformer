@@ -21,3 +21,7 @@ I measured one Compare run on the public Streamlit app using a stopwatch. From c
 Separating the services made setup harder. I had to configure secrets in Streamlit Cloud and verify that the Supabase anon key could read the hourly aggregates. I ran into a permissions error while setting up that read. The separation also let me deploy the interface using the same Render service as Product 5, with every model running in one place and database writes handled by the backend.
 
 I chose to show the round-trip timing because the inference number alone leaves out much of the wait a person experiences. Proverbs 11:1 connects honest measurement with character. For this project, that means giving the team enough information to decide whether the wait is acceptable and being clear about what I measured.
+
+## AI assistance
+
+I used ChatGPT to help draft and debug parts of the Streamlit interface, including the attention heatmap and the browser timer. I integrated and tested the code, configured the Streamlit Cloud deployment and its secrets, verified that the app could read the Supabase benchmarks, and measured the browser wait reported in my reflection.

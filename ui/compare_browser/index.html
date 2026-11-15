@@ -1,0 +1,83 @@
+<!doctype html>
+<html lang="en">
+<meta charset="utf-8">
+<style>
+  body { margin: 0; font: 16px system-ui, sans-serif; }
+  button { padding: 8px 14px; font: inherit; cursor: pointer; }
+  #cards { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 16px; }
+  article { overflow-wrap: anywhere; }
+  @media (max-width: 600px) {
+    #cards { grid-template-columns: 1fr; }
+  }
+</style>
+
+<button id="run" type="button" disabled>Compare all three</button>
+<p id="status" role="status"></p>
+<div id="cards"></div>
+
+<script>
+  const button = document.querySelector("#run");
+  const status = document.querySelector("#status");
+  const cards = document.querySelector("#cards");
+  let pending = null;
+
+  function send(type, details = {}) {
+    window.parent.postMessage({isStreamlitMessage: true, type, ...details}, "*");
+  }
+
+  function resize() {
+    send("streamlit:setFrameHeight", {height: document.documentElement.scrollHeight});
+  }
+
+  function addText(parent, tag, text) {
+    const element = document.createElement(tag);
+    element.textContent = text;
+    parent.append(element);
+  }
+
+  button.addEventListener("click", () => {
+    pending = {id: crypto.randomUUID(), start: performance.now()};
+    button.disabled = true;
+    cards.replaceChildren();
+    status.textContent = "Waiting for Render to return the three results…";
+    resize();
+    send("streamlit:setComponentValue", {value: pending.id, dataType: "json"});
+  });
+
+  window.addEventListener("message", (event) => {
+    if (event.source !== window.parent || event.data?.type !== "streamlit:render") return;
+
+    const {result, theme} = event.data.args;
+    document.body.style.color = event.data.theme?.textColor || theme?.textColor || "";
+    if (!pending) button.disabled = false;
+    if (!pending || result?.id !== pending.id) {
+      resize();
+      return;
+    }
+
+    const start = pending.start;
+    pending = null;
+    for (const row of result.rows) {
+      const card = document.createElement("article");
+      addText(card, "h3", row.name);
+      addText(card, "p", row.output);
+      if (row.inference_ms != null) {
+        addText(card, "p", `Server-side inference: ${row.inference_ms} ms`);
+        addText(card, "p", `Streamlit → Render round trip: ${row.request_ms} ms`);
+      }
+      cards.append(card);
+    }
+
+    requestAnimationFrame(() => requestAnimationFrame(() => {
+      const seconds = ((performance.now() - start) / 1000).toFixed(2);
+      status.textContent = result.error || `Total browser wait: ${seconds} seconds`;
+      button.disabled = false;
+      resize();
+    }));
+  });
+
+  new ResizeObserver(resize).observe(document.body);
+  send("streamlit:componentReady", {apiVersion: 1});
+  resize();
+</script>
+</html>

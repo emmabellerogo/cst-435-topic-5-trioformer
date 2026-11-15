@@ -3,6 +3,8 @@ import requests
 import streamlit as st
 import re
 from time import perf_counter
+from pathlib import Path
+from streamlit.components.v1 import declare_component
 
 
 def run_model(endpoint, payload, model_name):
@@ -28,6 +30,10 @@ def run_model(endpoint, payload, model_name):
 
     return None
 
+compare_browser = declare_component(
+    "compare_browser",
+    path=str(Path(__file__).resolve().parent / "compare_browser"),
+)
 
 st.title("TrioDeck")
 
@@ -245,14 +251,18 @@ with compare_tab:
             "BERT gets the passage with its last word masked. "
             "GPT-2 and T5 get the original passage."
         )
-        compare_clicked = st.button("Compare all three")
 
-    if compare_clicked:
+    completed = st.session_state.get("compare_completed")
+    run_id = compare_browser(result=completed, key="compare_browser")
+
+    if run_id and (completed is None or completed["id"] != run_id):
         passage = passage.strip()
         masked, substitutions = re.subn(r"\b\w+\b(?=\W*$)", "[MASK]", passage)
+        rows = []
+        error = None
 
         if not substitutions or "[MASK]" in passage or len(masked) > 4000:
-            st.warning("Enter a passage with a final word and no existing [MASK].")
+            error = "Enter a passage with a final word and no existing [MASK]."
         else:
             jobs = [
                 ("BERT", "bert_fillmask", {"text": masked, "top_k": 3}),
@@ -260,17 +270,28 @@ with compare_tab:
                 ("T5", "t5_summarize", {"text": passage, "max_new_tokens": 24}),
             ]
 
-            for column, (name, endpoint, payload) in zip(st.columns(3), jobs):
-                with column:
-                    st.subheader(name)
-                    start = perf_counter()
-                    result = run_model(endpoint, payload, name)
-                    request_ms = round((perf_counter() - start) * 1000)
+            for name, endpoint, payload in jobs:
+                start = perf_counter()
+                model_result = run_model(endpoint, payload, name)
+                request_ms = round((perf_counter() - start) * 1000)
 
-                    if result is not None:
-                        st.text(result["output_text"])
-                        st.metric("Server-side inference", f"{result['latency_ms']} ms")
-                        st.metric("Streamlit → API round trip", f"{request_ms:,} ms")
+                if model_result is None:
+                    rows.append({"name": name, "output": "No result returned. Try again."})
+                else:
+                    rows.append({
+                        "name": name,
+                        "output": model_result["output_text"],
+                        "inference_ms": model_result["latency_ms"],
+                        "request_ms": request_ms,
+                    })
+
+        st.session_state["compare_completed"] = {
+            "id": run_id,
+            "rows": rows,
+            "error": error,
+        }
+        st.rerun()
+
 
 with history_tab:
     st.header("Latency History")

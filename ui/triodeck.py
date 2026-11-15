@@ -383,3 +383,33 @@ with history_tab:
                             },
                             use_container_width=True,
                         )
+
+with st.expander("Service status"):
+    st.write("Check the Render API, its version, and its benchmark summary.")
+
+    if st.button("Check service status"):
+        api_url = st.secrets.get("API_URL")
+
+        if not api_url:
+            st.error("Add API_URL to your Streamlit secrets.")
+        else:
+            checks = [
+                ("Health", "healthz"),
+                ("Version", "version"),
+                ("Benchmark summary", "benchmarks"),
+            ]
+
+            with st.spinner("Checking Render. The service may be waking up."):
+                for label, endpoint in checks:
+                    st.markdown(f"**{label}**")
+                    try:
+                        response = requests.get(
+                            f"{api_url.rstrip('/')}/{endpoint}",
+                            timeout=30,
+                        )
+                        response.raise_for_status()
+                        st.json(response.json(), expanded=False)
+                    except requests.Timeout:
+                        st.warning(f"{label} timed out. Wait a moment and try again.")
+                    except requests.RequestException:
+                        st.error(f"Couldn't load {label.lower()} from Render.")

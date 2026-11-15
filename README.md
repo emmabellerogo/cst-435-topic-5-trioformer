@@ -14,6 +14,7 @@
 | **API (FastAPI backend)** | Render Free | https://former-it-api.onrender.com |
 | **API documentation** | Render Free (`/docs`) | https://former-it-api.onrender.com/docs |
 | **Data** | Supabase | https://hutifztunklvgvilickm.supabase.co |
+| **Link to Loom Video** | Loom | https://www.loom.com/share/043e13352e974614814414bb564ad6c6 |
 
 > The Render service is deployed and live-tested. **Streamlit is out of scope for Product 5:** the Streamlit interface
 > belongs to Product 5B: TrioDeck, so no UI URL is listed here.
@@ -561,7 +562,8 @@ TrioFormer connected the theory behind transformers with the practical challenge
 ## Individual Contribution Evidence
 
 See [`docs/INDIVIDUAL_CONTRIBUTION.md`](docs/INDIVIDUAL_CONTRIBUTION.md) for my role, the Product 5 task list with
-status, commit and test evidence, and how I used AI assistance (Claude) in this project.
+status, and commit and test evidence. AI assistance is documented in
+[`docs/AI_USE_DOCUMENTATION.md`](docs/AI_USE_DOCUMENTATION.md).
 
 ## Checklist
 
@@ -574,4 +576,4 @@ out of scope for Product 5; it belongs to Product 5B: TrioDeck.
 - [x] pytest suite passing (133 passed, 1 skipped: the live-Supabase test)
 - [x] `MODEL_CARD.md` completed (owner set to Emma Rogoveanu; pretrained models and limitations documented)
 - [x] Individual contribution evidence (`docs/INDIVIDUAL_CONTRIBUTION.md`)
-- [ ] Individual presentation video (not yet recorded)
+- [X] Individual presentation video

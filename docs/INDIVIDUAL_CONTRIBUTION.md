@@ -7,21 +7,22 @@ transformer encoder.
 **Repository:** https://github.com/emmabellerogo/cst-435-topic-5-trioformer
 **Deployed API:** https://former-it-api.onrender.com (docs: https://former-it-api.onrender.com/docs)
 
-## 1. How I worked (AI-assisted development)
+## 1. AI assistance
 
-I worked with Claude (Anthropic's AI coding assistant) in my editor. I want to be accurate about who did what.
+I used Claude (Anthropic's AI coding assistant) in my editor. Details by development phase, with prompt excerpts
+and evidence gaps, are in [`AI_USE_DOCUMENTATION.md`](AI_USE_DOCUMENTATION.md).
 
-* **Claude assisted with:** writing and revising code, debugging, writing and running tests, running the Linux
-  memory experiments in GitHub Actions, and drafting documentation.
-* **I did:** set the project direction and made the technical decisions (for example, dropping ONNX and
-  quantization in favour of small pretrained checkpoints with plain PyTorch, and choosing the checkpoints), reviewed
-  results and diffs, created and configured the Render service and its environment variables, fixed the Render
-  build command after the first deployment failed, ran the live endpoint tests, reviewed and committed changes
-  through GitHub Desktop, and completed the submission documentation, including the engineering report.
+* **Claude assisted with:** generating and revising code, debugging, writing and running tests, running the Linux
+  memory experiments in GitHub Actions, and drafting documentation. At my explicit instruction it also merged
+  and pushed the validated PyTorch branch.
+* **I did:** set the requirements and made the technical decisions, including dropping ONNX and quantization for
+  small pretrained checkpoints on plain PyTorch (Claude evaluated the candidates; I approved the direction). I
+  reviewed results and diffs, created and configured the Render service and its environment variables, fixed the
+  Render build command after the first deployment failed, ran the live endpoint tests, committed later
+  documentation changes through GitHub Desktop, and prepared the final deliverables.
 * **What I am not claiming:** I did not personally write every line of code. All commits are under my Git
-  identity, so commit authorship does not show which parts Claude produced. Two commits carry a
-  `Co-Authored-By: Claude` trailer; the others do not, but the AI-assisted workflow above applies to the project
-  as a whole.
+  identity, so authorship does not show which parts Claude produced. Two commits (`8c9f487`, `1c61e25`) carry a
+  `Co-Authored-By: Claude` trailer; the assistance applies to the project as a whole.
 
 ## 2. Product 5 tasks and status
 
@@ -44,19 +45,19 @@ I worked with Claude (Anthropic's AI coding assistant) in my editor. I want to b
 
 ## 3. Summary of my work
 
-* Built the project from the course template and chose the TrioFormer scope: three pretrained models, a
-  from-scratch encoder, latency benchmarking, and a three-cloud deployment.
-* Directed the custom transformer implementation and its tests, and reviewed the matched-initialization
-  comparison against PyTorch's encoder layer.
+* Adapted the course template and set the TrioFormer scope: three pretrained models, a from-scratch encoder,
+  latency benchmarking, and a three-cloud deployment.
+* Directed the custom transformer implementation, its tests and the benchmark design, and reviewed the
+  matched-initialization comparison against PyTorch's encoder layer.
 * Decided to move from ONNX/quantization to small pretrained checkpoints (`prajjwal1/bert-small`,
   `erwanf/gpt2-mini`, `t5-small`) with plain PyTorch, after Linux memory tests showed it fit Render Free's 512 MB.
-* Approved the one-model-at-a-time loading design and reviewed the Linux test results before merging to `main`.
+* Approved the one-model-at-a-time loading design and reviewed the Linux test results before the merge to `main`.
 * Created the Render service from the repository Blueprint, entered the Supabase secrets, and fixed the failed
   first build by changing the build command to `python -m scripts.download_models`.
 * Ran live tests of BERT, GPT-2, T5, the custom encoder endpoint, and `/benchmarks`, and recorded the
   latencies.
-* Reviewed and committed changes through GitHub Desktop, and wrote and finalized the engineering report and
-  submission documentation.
+* Supplied the engineering report text and directed the README and submission documentation, which Claude helped
+  audit and draft.
 
 ## 4. Verified results
 

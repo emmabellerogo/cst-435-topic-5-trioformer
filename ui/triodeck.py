@@ -51,138 +51,154 @@ concepts_tab, encoder_tab, bert_tab, gpt_tab, t5_tab, compare_tab, history_tab =
 
 with bert_tab:
     st.header("BERT — Fill Mask")
-    st.markdown("**When to use this archetype**")
-    st.write(
-        "Use BERT to fill in a blank using clues on both sides, "
-        "like in a vocabulary exercise."
-    )
+    main, guide = st.columns([3, 1])
 
-    text = st.text_input(
-        "Enter a sentence with one [MASK]",
-        "The capital of France is [MASK].",
-    )
+    with guide:
+        st.subheader("When to use this archetype")
+        st.write(
+            "Use BERT to fill in a blank using clues on both sides, "
+            "like in a vocabulary exercise."
+        )
 
-    if st.button("Run BERT"):
-        if text.count("[MASK]") != 1:
-            st.warning("Include exactly one [MASK] in your sentence.")
-        else:
-            result = run_model("bert_fillmask", {"text": text, "top_k": 5}, "BERT")
-            if result is not None:
-                st.write(result["output_text"])
-                st.table(result["predictions"])
-                st.metric("Server-side inference", f"{result['latency_ms']} ms")
+    with main:
+        text = st.text_input(
+            "Enter a sentence with one [MASK]",
+            "The capital of France is [MASK].",
+        )
+
+        if st.button("Run BERT"):
+            if text.count("[MASK]") != 1:
+                st.warning("Include exactly one [MASK] in your sentence.")
+            else:
+                result = run_model("bert_fillmask", {"text": text, "top_k": 5}, "BERT")
+                if result is not None:
+                    st.write(result["output_text"])
+                    st.table(result["predictions"])
+                    st.metric("Server-side inference", f"{result['latency_ms']} ms")
 
 with gpt_tab:
     st.header("GPT-2 — Continue Text")
-    st.markdown("**When to use this archetype**")
-    st.write("Use GPT-2 to draft what comes next when you already have a starting line.")
+    main, guide = st.columns([3, 1])
 
-    prompt = st.text_area(
-        "Enter the beginning of a passage",
-        "The students planted tomatoes in the school garden. The next morning,",
-    )
+    with guide:
+        st.subheader("When to use this archetype")
+        st.write("Use GPT-2 to draft what comes next when you already have a starting line.")
 
-    if st.button("Run GPT-2"):
-        if not prompt.strip():
-            st.warning("Enter a prompt first.")
-        else:
-            result = run_model(
-                "gpt2_continue",
-                {"prompt": prompt, "max_new_tokens": 20},
-                "GPT-2",
-            )
-            if result is not None:
-                st.write(result["output_text"])
-                st.metric("Server-side inference", f"{result['latency_ms']} ms")
+    with main:
+        prompt = st.text_area(
+            "Enter the beginning of a passage",
+            "The students planted tomatoes in the school garden. The next morning,",
+        )
+
+        if st.button("Run GPT-2"):
+            if not prompt.strip():
+                st.warning("Enter a prompt first.")
+            else:
+                result = run_model(
+                    "gpt2_continue",
+                    {"prompt": prompt, "max_new_tokens": 20},
+                    "GPT-2",
+                )
+                if result is not None:
+                    st.write(result["output_text"])
+                    st.metric("Server-side inference", f"{result['latency_ms']} ms")
 
 with t5_tab:
     st.header("T5 — Summarize")
-    st.markdown("**When to use this archetype**")
-    st.write("Use T5 to turn a longer passage into a short summary you can review.")
+    main, guide = st.columns([3, 1])
 
-    passage = st.text_area(
-        "Enter a passage to summarize",
-        "The city council approved a new bike lane network on Tuesday. "
-        "The plan covers 40 miles of downtown streets. "
-        "Construction will begin next spring and will be completed in phases.",
-    )
+    with guide:
+        st.subheader("When to use this archetype")
+        st.write("Use T5 to turn a longer passage into a short summary you can review.")
 
-    if st.button("Run T5"):
-        if not passage.strip():
-            st.warning("Enter a passage first.")
-        else:
-            result = run_model(
-                "t5_summarize",
-                {"text": passage, "max_new_tokens": 24},
-                "T5",
-            )
-            if result is not None:
-                st.write(result["output_text"])
-                st.metric("Server-side inference", f"{result['latency_ms']} ms")
+    with main:
+        passage = st.text_area(
+            "Enter a passage to summarize",
+            "The city council approved a new bike lane network on Tuesday. "
+            "The plan covers 40 miles of downtown streets. "
+            "Construction will begin next spring and will be completed in phases.",
+        )
+
+        if st.button("Run T5"):
+            if not passage.strip():
+                st.warning("Enter a passage first.")
+            else:
+                result = run_model(
+                    "t5_summarize",
+                    {"text": passage, "max_new_tokens": 24},
+                    "T5",
+                )
+                if result is not None:
+                    st.write(result["output_text"])
+                    st.metric("Server-side inference", f"{result['latency_ms']} ms")
 
 
 with encoder_tab:
     st.header("My Encoder Block")
-    st.markdown("**When to use this archetype**")
-    st.write(
-        "Use this demo to see how an encoder combines information from the "
-        "words in a sentence. Each row shows where one word puts its attention."
-    )
+    main, guide = st.columns([3, 1])
 
-    sentence = st.text_input("Enter a short sentence", "the cat sat on the mat")
-    use_positions = st.checkbox("Use positional encoding", value=True)
+    with guide:
+        st.subheader("When to use this archetype")
+        st.write(
+            "Use this demo to see how an encoder combines information from the "
+            "words in a sentence. Each row shows where one word puts its attention."
+        )
 
-    if st.button("Show attention"):
-        if not 1 <= len(sentence.split()) <= 32:
-            st.warning("Enter between 1 and 32 words.")
-        else:
-            result = run_model(
-                "encoder_attention",
-                {
-                    "text": sentence,
-                    "num_heads": 4,
-                    "use_positional_encoding": use_positions,
-                },
-                "the custom encoder",
-            )
+    with main:
+        sentence = st.text_input("Enter a short sentence", "the cat sat on the mat")
+        use_positions = st.checkbox("Use positional encoding", value=True)
 
-            if result is not None:
-                labels = [
-                    f"{index}. {word}"
-                    for index, word in enumerate(result["tokens"], start=1)
-                ]
-                head = 1
-                cells = [
-                    {"word": labels[row], "looks_at": labels[column], "weight": weight}
-                    for row, weights in enumerate(result["attention"][head - 1])
-                    for column, weight in enumerate(weights)
-                ]
-                st.vega_lite_chart(
-                    pd.DataFrame(cells),
+        if st.button("Show attention"):
+            if not 1 <= len(sentence.split()) <= 32:
+                st.warning("Enter between 1 and 32 words.")
+            else:
+                result = run_model(
+                    "encoder_attention",
                     {
-                        "mark": "rect",
-                        "encoding": {
-                            "x": {
-                                "field": "looks_at", "type": "ordinal",
-                                "sort": labels, "title": "Word receiving attention",
-                            },
-                            "y": {
-                                "field": "word", "type": "ordinal",
-                                "sort": labels, "title": "Word being processed",
-                            },
-                            "color": {
-                                "field": "weight", "type": "quantitative",
-                                "scale": {"domain": [0, 1]}, "title": "Attention weight",
-                            },
-                            "tooltip": [
-                                {"field": "word", "type": "nominal"},
-                                {"field": "looks_at", "type": "nominal"},
-                                {"field": "weight", "type": "quantitative", "format": ".3f"},
-                            ],
-                        },
+                        "text": sentence,
+                        "num_heads": 4,
+                        "use_positional_encoding": use_positions,
                     },
-                    use_container_width=True,
+                    "the custom encoder",
                 )
+
+                if result is not None:
+                    labels = [
+                        f"{index}. {word}"
+                        for index, word in enumerate(result["tokens"], start=1)
+                    ]
+                    head = 1
+                    cells = [
+                        {"word": labels[row], "looks_at": labels[column], "weight": weight}
+                        for row, weights in enumerate(result["attention"][head - 1])
+                        for column, weight in enumerate(weights)
+                    ]
+                    st.vega_lite_chart(
+                        pd.DataFrame(cells),
+                        {
+                            "mark": "rect",
+                            "encoding": {
+                                "x": {
+                                    "field": "looks_at", "type": "ordinal",
+                                    "sort": labels, "title": "Word receiving attention",
+                                },
+                                "y": {
+                                    "field": "word", "type": "ordinal",
+                                    "sort": labels, "title": "Word being processed",
+                                },
+                                "color": {
+                                    "field": "weight", "type": "quantitative",
+                                    "scale": {"domain": [0, 1]}, "title": "Attention weight",
+                                },
+                                "tooltip": [
+                                    {"field": "word", "type": "nominal"},
+                                    {"field": "looks_at", "type": "nominal"},
+                                    {"field": "weight", "type": "quantitative", "format": ".3f"},
+                                ],
+                            },
+                        },
+                        use_container_width=True,
+                    )
 
 with concepts_tab:
     st.header("Concepts")
